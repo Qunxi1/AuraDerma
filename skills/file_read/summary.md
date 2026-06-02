@@ -1,0 +1,1 @@
+Read local PDF, DOC, DOCX, TXT, PNG, and JPG files. Detect file type, extract text or OCR-ready content, and hand results to downstream analysis skills.

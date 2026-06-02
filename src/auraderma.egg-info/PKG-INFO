@@ -1,0 +1,55 @@
+Metadata-Version: 2.4
+Name: auraderma
+Version: 0.1.0
+Summary: Skincare agent CLI MVP with RAG, memory, and web fallback
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+Requires-Dist: click>=8.1.7
+Requires-Dist: pydantic>=2.8.2
+Requires-Dist: qdrant-client>=1.11.3
+Requires-Dist: openai>=1.40.0
+Requires-Dist: python-dotenv>=1.0.1
+Requires-Dist: pymupdf>=1.24.9
+Requires-Dist: python-docx>=1.1.2
+Requires-Dist: requests>=2.32.3
+Requires-Dist: tiktoken>=0.7.0
+
+# AuraDerma
+
+## Quick start
+
+1. Copy the example config:
+
+```powershell
+Copy-Item .env.example .env
+```
+
+2. Fill in your real API keys in `.env`.
+
+3. Install dependencies:
+
+```bash
+pip install -e .
+```
+
+4. Start Qdrant:
+
+```bash
+docker compose up -d qdrant
+```
+
+5. Run the CLI:
+
+```bash
+auraderma chat
+```
+
+## Config files
+
+- `.env.example` is the template
+- `.env` is your real local configuration
+- `.env.local` can be used for machine-specific overrides
+
+## Skills
+
+The only fully wired skill right now is `web_search`, backed by Tavily.

@@ -1,0 +1,1 @@
+Use Tavily to search the web when internal product, memory, and document sources are insufficient. Return a small set of reference-only results and clearly mark them as web-sourced in the final answer.
