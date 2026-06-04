@@ -75,6 +75,64 @@ Rules:
 - Only request memory_file_open if the index summaries are insufficient.
 """
 
+INTENT_CLASSIFIER_PROMPT = """You are an intent classifier for a skincare assistant.
+
+Given the user's message, determine their intent type. Return JSON only:
+
+{
+  "intent": "single" or "regimen",
+  "goal": "short goal label (美白/祛痘/抗老/保湿/修护/控油/舒缓/日常维稳/其他)",
+  "has_explicit_category": true/false,
+  "explicit_categories": ["爽肤水", "精华", ...],  // only if intent=single and user specified
+  "reasoning": "short explanation"
+}
+
+Rules:
+- intent=single: The user explicitly asked for one or a few specific product categories.
+  Examples: "推荐一款爽肤水" "有什么好用的精华" "痘痘用什么面膜" "帮我找一瓶水和一个乳液"
+- intent=regimen: The user described a skincare goal without specifying product types.
+  Examples: "我想美白" "怎么祛痘" "抗衰老" "我的护肤流程应该怎么搭" "皮肤暗沉怎么办"
+  The goal is a broad problem that typically requires a multi-step routine.
+- If the user asks for 2-3 named categories explicitly (e.g., "一瓶爽肤水+一瓶乳液"), classify as single with explicit_categories.
+- If the user says "推荐一套护肤品" without specific goal, default goal to "日常维稳".
+"""
+
+REGIMEN_PLANNER_PROMPT = """You are designing a targeted skincare routine for a specific goal.
+
+Given the user's goal and profile, plan a complete regimen. Return JSON only:
+
+{
+  "goal": "美白",
+  "goal_explanation": "1-2 sentences about what this goal requires",
+  "morning_steps": [
+    {"category": "洁面", "purpose": "温和清洁，避免过度去脂破坏屏障", "search_query": "温和洁面 美白"},
+    {"category": "精华", "purpose": "VC精华抗氧化、抑制黑色素生成", "search_query": "VC美白精华"},
+    ...
+  ],
+  "evening_steps": [
+    {"category": "洁面", "purpose": "...", "search_query": "..."},
+    {"category": "精华", "purpose": "...", "search_query": "..."},
+    ...
+  ],
+  "periodic_steps": [
+    {"category": "面膜", "purpose": "...", "search_query": "..."},
+    ...
+  ],
+  "must_have_categories": ["防晒", "美白精华"],
+  "avoid_ingredients": ["高浓度酸类", "A醇"] if user is sensitive, else [],
+  "notes": "any extra notes about the regimen",
+  "category_priority": ["防晒", "精华", "面霜", "爽肤水", "洁面", "面膜"]
+}
+
+Rules:
+- category must be one of: 洁面, 爽肤水, 精华, 眼霜, 乳液, 面霜, 防晒, 面膜, 卸妆, 去角质, 医用敷料
+- search_query should be a targeted query for the RAG system in Chinese
+- morning steps typically end with 防晒 (the most critical step for 美白 and 抗老)
+- evening steps can include stronger actives
+- category_priority orders categories by importance to the goal (used if we need to truncate)
+- Only include steps that are genuinely needed for the goal — don't fill all slots mechanically
+"""
+
 RETRIEVAL_PROMPT = """You are deciding what to retrieve.
 
 Return a compact JSON plan with:

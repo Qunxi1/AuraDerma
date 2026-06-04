@@ -1,23 +1,77 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from textwrap import dedent
 
 from qdrant_client.http import models
 
 from llm import LLMClient
 from memory import MemoryBundle, MemoryPolicy, MemoryStore
-from prompts import ANSWER_PROMPT, MEMORY_ROUTER_PROMPT, RETRIEVAL_PROMPT, SKILL_ROUTER_PROMPT, SYSTEM_PROMPT
+from prompts import (
+    ANSWER_PROMPT,
+    INTENT_CLASSIFIER_PROMPT,
+    MEMORY_ROUTER_PROMPT,
+    REGIMEN_PLANNER_PROMPT,
+    RETRIEVAL_PROMPT,
+    SKILL_ROUTER_PROMPT,
+    SYSTEM_PROMPT,
+)
 from retrieval import Retriever
 from skill_manager import SkillManager
 from web_search import WebSearchClient
 
+
+# ---------------------------------------------------------------------------
+# Data structures
+# ---------------------------------------------------------------------------
 
 @dataclass(slots=True)
 class AgentContext:
     user_id: str
     question: str
     memory: MemoryBundle
+
+
+@dataclass(slots=True)
+class IntentResult:
+    intent: str  # "single" | "regimen"
+    goal: str
+    has_explicit_category: bool
+    explicit_categories: list[str] = field(default_factory=list)
+    reasoning: str = ""
+
+
+@dataclass(slots=True)
+class RegimenStep:
+    category: str
+    purpose: str
+    search_query: str
+    time_of_day: str  # "morning" | "evening" | "periodic"
+    product_hits: list = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class RegimenPlan:
+    goal: str
+    goal_explanation: str
+    steps: list[RegimenStep] = field(default_factory=list)
+    must_have_categories: list[str] = field(default_factory=list)
+    avoid_ingredients: list[str] = field(default_factory=list)
+    notes: str = ""
+    category_priority: list[str] = field(default_factory=list)
+
+    # Grouped access
+    @property
+    def morning_steps(self) -> list[RegimenStep]:
+        return [s for s in self.steps if s.time_of_day == "morning"]
+
+    @property
+    def evening_steps(self) -> list[RegimenStep]:
+        return [s for s in self.steps if s.time_of_day == "evening"]
+
+    @property
+    def periodic_steps(self) -> list[RegimenStep]:
+        return [s for s in self.steps if s.time_of_day == "periodic"]
 
 
 @dataclass(slots=True)
@@ -36,33 +90,100 @@ class RetrievalResult:
     skill_names: list[str]
     memory_file_snippets: list[str]
     skill_body: str
+    # --- intent-aware fields ---
+    intent: str = "single"
+    regimen_goal: str = ""
+    regimen_plan: RegimenPlan | None = None
 
+
+# ---------------------------------------------------------------------------
+# Agent
+# ---------------------------------------------------------------------------
 
 class SkincareAgent:
-    def __init__(self, llm: LLMClient, retriever: Retriever, web: WebSearchClient, policy: MemoryPolicy) -> None:
+    def __init__(self, llm: LLMClient, retriever: Retriever, web: WebSearchClient, policy: MemoryPolicy, _embedder: object | None = None) -> None:
         self.llm = llm
         self.retriever = retriever
         self.web = web
         self.policy = policy
+        self._embedder = _embedder  # 可选的外部 embedder（如 LocalEmbedder），为 None 时回退到 self.llm.embed()
+
+    # ------------------------------------------------------------------
+    # Intent classification + regimen planning
+    # ------------------------------------------------------------------
+
+    def classify_intent(self, question: str) -> IntentResult:
+        raw = self.llm.chat(SYSTEM_PROMPT, f"{INTENT_CLASSIFIER_PROMPT}\n\n用户问题：{question}")
+        obj = self._parse_json_obj(raw)
+        return IntentResult(
+            intent=obj.get("intent", "single"),
+            goal=obj.get("goal", "护肤咨询"),
+            has_explicit_category=bool(obj.get("has_explicit_category", False)),
+            explicit_categories=[str(c) for c in obj.get("explicit_categories", [])],
+            reasoning=str(obj.get("reasoning", "")),
+        )
+
+    def plan_regimen(self, question: str, goal: str) -> RegimenPlan:
+        prompt = dedent(
+            f"""
+            {REGIMEN_PLANNER_PROMPT}
+
+            用户问题：
+            {question}
+
+            识别出的护肤目标：{goal}
+
+            请规划护肤体系，返回 JSON。
+            """
+        ).strip()
+        raw = self.llm.chat(SYSTEM_PROMPT, prompt)
+        obj = self._parse_json_obj(raw)
+
+        # Flatten all step groups into one list, keeping time_of_day
+        steps: list[RegimenStep] = []
+        for time_slot, key in [("morning", "morning_steps"), ("evening", "evening_steps"), ("periodic", "periodic_steps")]:
+            for step_data in obj.get(key, []):
+                steps.append(RegimenStep(
+                    category=str(step_data.get("category", "")),
+                    purpose=str(step_data.get("purpose", "")),
+                    search_query=str(step_data.get("search_query", "")),
+                    time_of_day=time_slot,
+                ))
+
+        return RegimenPlan(
+            goal=goal,
+            goal_explanation=str(obj.get("goal_explanation", "")),
+            steps=steps,
+            must_have_categories=[str(c) for c in obj.get("must_have_categories", [])],
+            avoid_ingredients=[str(i) for i in obj.get("avoid_ingredients", [])],
+            notes=str(obj.get("notes", "")),
+            category_priority=[str(c) for c in obj.get("category_priority", [])],
+        )
+
+    # ------------------------------------------------------------------
+    # Main routing
+    # ------------------------------------------------------------------
 
     def route(self, ctx: AgentContext, memory_store: MemoryStore, skill_manager: SkillManager) -> RetrievalResult:
-        retrieval_plan = self.llm.chat(SYSTEM_PROMPT, f"{RETRIEVAL_PROMPT}\n\n用户问题：{ctx.question}")
-        query_vector = self._embed_query(ctx.question)
+        # ① 意图分类
+        intent = self.classify_intent(ctx.question)
+        question_embedding = self._embed_query(ctx.question)
 
-        product_hits = self.retriever.search(self.retriever.products_collection, query_vector, limit=5)
+        # ② 通用检索（memory / docs 共用）
         memory_hits = self.retriever.search(
             self.retriever.memory_collection,
-            query_vector,
+            question_embedding,
             limit=5,
             filters=models.Filter(
                 must=[models.FieldCondition(key="user_id", match=models.MatchValue(value=ctx.user_id))]
             ),
         )
-        doc_hits = self.retriever.search(self.retriever.docs_collection, query_vector, limit=5)
+        doc_hits = self.retriever.search(self.retriever.docs_collection, question_embedding, limit=5)
 
         memory_index_lines = memory_store.load_index(user_id=ctx.user_id, limit=20)
         index_recall_lines = memory_store.recall_index_lines(user_id=ctx.user_id, query=ctx.question, limit=6)
 
+        # ③ Memory router
         router_prompt = dedent(
             f"""
             用户问题:
@@ -82,11 +203,67 @@ class SkincareAgent:
         relevant_memory_ids = [str(x) for x in memory_router.get("relevant_memory_ids", [])]
         open_memory_files = bool(memory_router.get("open_original_files", False))
 
+        memory_file_snippets = memory_store.read_relevant_memory_texts(
+            user_id=ctx.user_id,
+            memory_ids=relevant_memory_ids,
+            query=ctx.question,
+            limit=4,
+        ) if open_memory_files else []
+
+        # ④ 产品检索：按意图分路
+        retrieval_plan: str
+        product_hits: list
+        regimen_plan: RegimenPlan | None = None
+
+        if intent.intent == "regimen":
+            # ── 护肤体系模式：LLM 规划品类 → 逐品类 RAG ──
+            regimen_plan = self.plan_regimen(ctx.question, intent.goal)
+
+            # 为每个唯一的 search_query 执行检索
+            seen_queries: dict[str, list] = {}  # query → hits
+            for step in regimen_plan.steps:
+                sq = step.search_query
+                if sq not in seen_queries:
+                    sq_emb = self._embed_query(sq)
+                    seen_queries[sq] = self.retriever.search(
+                        self.retriever.products_collection, sq_emb, limit=3
+                    )
+                step.product_hits = seen_queries[sq]
+
+            # 合并所有品类命中（去重，用于 skill_router 概览）
+            all_hit_ids: set[str] = set()
+            merged_hits: list = []
+            for hits in seen_queries.values():
+                for h in hits:
+                    if h.id not in all_hit_ids:
+                        all_hit_ids.add(h.id)
+                        merged_hits.append(h)
+            product_hits = merged_hits
+
+            retrieval_plan = (
+                f"[护肤体系模式] 目标={intent.goal}，"
+                f"规划了 {len(regimen_plan.steps)} 个步骤，"
+                f"覆盖品类：{'、'.join(dict.fromkeys(s.category for s in regimen_plan.steps))}"
+            )
+        else:
+            # ── 单品模式：现有流程 + 品类感知 ──
+            retrieval_plan = self.llm.chat(SYSTEM_PROMPT, f"{RETRIEVAL_PROMPT}\n\n用户问题：{ctx.question}")
+            # 如有显式品类，构造更精准的查询
+            if intent.explicit_categories:
+                enhanced_query = f"{ctx.question} {' '.join(intent.explicit_categories)}"
+                enhanced_emb = self._embed_query(enhanced_query)
+                product_hits = self.retriever.search(self.retriever.products_collection, enhanced_emb, limit=8)
+            else:
+                product_hits = self.retriever.search(self.retriever.products_collection, question_embedding, limit=5)
+
+        # ⑤ Skill router
         skill_registry_summary = skill_manager.registry_summary()
         skill_prompt = dedent(
             f"""
             用户问题:
             {ctx.question}
+
+            意图: {intent.intent}, 目标: {intent.goal}
 
             记忆索引摘要:
             {chr(10).join(index_recall_lines) if index_recall_lines else '无'}
@@ -112,13 +289,7 @@ class SkincareAgent:
         skill_plan = json_dumps_pretty(skill_router)
         skill_body = skill_manager.registry_body(skill_names)
 
-        memory_file_snippets = memory_store.read_relevant_memory_texts(
-            user_id=ctx.user_id,
-            memory_ids=relevant_memory_ids,
-            query=ctx.question,
-            limit=4,
-        ) if open_memory_files else []
-
+        # ⑥ Web search (仅在内部资源不足时)
         need_web = self._should_use_web(product_hits, memory_hits, doc_hits, index_recall_lines, skill_names)
         web_notes: list[str] = []
         if need_web and self.web.enabled:
@@ -143,14 +314,30 @@ class SkincareAgent:
             skill_names=skill_names,
             memory_file_snippets=memory_file_snippets,
             skill_body=skill_body,
+            intent=intent.intent,
+            regimen_goal=intent.goal,
+            regimen_plan=regimen_plan,
         )
+
+    # ------------------------------------------------------------------
+    # Answer generation
+    # ------------------------------------------------------------------
 
     def answer(self, ctx: AgentContext, memory_store: MemoryStore, skill_manager: SkillManager) -> str:
         route = self.route(ctx, memory_store, skill_manager)
+
+        if route.intent == "regimen" and route.regimen_plan:
+            return self._answer_regimen(ctx, route)
+        else:
+            return self._answer_single(ctx, route)
+
+    def _answer_single(self, ctx: AgentContext, route: RetrievalResult) -> str:
         context_block = dedent(
             f"""
             用户问题:
             {ctx.question}
+
+            意图模式: {route.intent} | 护肤目标: {route.regimen_goal}
 
             检索计划:
             {route.retrieval_plan}
@@ -191,6 +378,84 @@ class SkincareAgent:
         ).strip()
         return self.llm.chat(ANSWER_PROMPT, context_block)
 
+    def _answer_regimen(self, ctx: AgentContext, route: RetrievalResult) -> str:
+        plan = route.regimen_plan
+        assert plan is not None
+
+        # 构建按时间分组的产品推荐块
+        regimen_blocks: list[str] = []
+
+        def _format_time_group(label: str, steps: list[RegimenStep]) -> str:
+            if not steps:
+                return ""
+            lines = [f"\n【{label}】"]
+            for step in steps:
+                lines.append(f"\n  ▶ {step.category} — {step.purpose}")
+                lines.append(f"     检索词: {step.search_query}")
+                if step.product_hits:
+                    lines.append(f"     内部召回 ({len(step.product_hits)} 款):")
+                    for h in step.product_hits:
+                        p = h.payload
+                        name = p.get("name", "?")
+                        brand = p.get("brand", "?")
+                        price = p.get("price_cny", "")
+                        price_str = f" ¥{price}" if price else ""
+                        concerns = "、".join(p.get("concerns", [])[:4])
+                        lines.append(f"       score={h.score:.2f} | [{brand}] {name}{price_str} | {concerns}")
+                else:
+                    lines.append("     (内部暂无匹配产品，建议网页搜索补充)")
+            return "\n".join(lines)
+
+        regimen_blocks.append(_format_time_group("☀️ 日间护理", plan.morning_steps))
+        regimen_blocks.append(_format_time_group("🌙 夜间护理", plan.evening_steps))
+        regimen_blocks.append(_format_time_group("📅 周期护理", plan.periodic_steps))
+
+        must_have_str = "、".join(plan.must_have_categories) if plan.must_have_categories else "无"
+        avoid_str = "、".join(plan.avoid_ingredients) if plan.avoid_ingredients else "无"
+
+        context_block = dedent(
+            f"""
+            用户问题:
+            {ctx.question}
+
+            意图模式: regimen | 护肤目标: {plan.goal}
+            目标说明: {plan.goal_explanation}
+
+            ── 护肤体系规划 ──
+            {''.join(regimen_blocks)}
+
+            ── 体系约束 ──
+            必须覆盖的品类: {must_have_str}
+            建议避免的成分: {avoid_str}
+            品类优先级: {'、'.join(plan.category_priority) if plan.category_priority else '无'}
+            备注: {plan.notes if plan.notes else '无'}
+
+            记忆索引:
+            {chr(10).join(route.memory_index_lines) if route.memory_index_lines else '无'}
+
+            需要打开的记忆ID:
+            {', '.join(route.relevant_memory_ids) if route.relevant_memory_ids else '无'}
+
+            打开的记忆原文片段:
+            {chr(10).join(route.memory_file_snippets) if route.memory_file_snippets else '无'}
+
+            网页搜索参考:
+            {chr(10).join(route.web_notes) if route.web_notes else '无'}
+
+            ── 回答要求 ──
+            请按照日间→夜间→周期护理的时间线组织回答。
+            每个步骤先说明目的，再列出内部召回的产品推荐，最后如需补充可提及网页搜索。
+            如果某品类内部无产品，明确指出"当前知识库暂无该品类产品"，不要编造。
+            最后给出完整的使用流程总结和注意事项。
+            """
+        ).strip()
+
+        return self.llm.chat(ANSWER_PROMPT, context_block)
+
+    # ------------------------------------------------------------------
+    # Memory / helpers
+    # ------------------------------------------------------------------
+
     def auto_memory_extract(self, user_id: str, dialog_text: str) -> list:
         prompt = (
             "请从以下对话中抽取可长期保存的护肤记忆，返回 JSON 数组。"
@@ -227,6 +492,10 @@ class SkincareAgent:
             memory_store.append(item)
             self._apply_memory_to_bundle(memory_bundle, item)
 
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
     def _should_use_web(self, product_hits, memory_hits, doc_hits, index_recall_lines, skill_names) -> bool:
         if product_hits:
             return False
@@ -239,6 +508,8 @@ class SkincareAgent:
         return "web_search" in skill_names or len(skill_names) == 0
 
     def _embed_query(self, question: str) -> list[float]:
+        if self._embedder is not None:
+            return self._embedder.embed([question])[0]  # type: ignore[union-attr]
         return self.llm.embed([question])[0]
 
     @staticmethod

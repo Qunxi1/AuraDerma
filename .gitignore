@@ -25,6 +25,10 @@ data/
 logs/
 *.log
 
+# Qdrant downloaded binary
+qdrant.zip
+*.zip
+
 # OS / editor files
 .DS_Store
 Thumbs.db

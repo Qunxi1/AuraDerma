@@ -41,6 +41,17 @@ class ProductRecord:
     concerns: list[str] = field(default_factory=list)
     usage_notes: str = ""
     source: str = ""
+    # --- 新增字段，来源于线上采集的丰富护肤品数据 ---
+    efficacy: str = ""              # 功效完整描述
+    core_efficacy: str = ""         # 核心功效
+    faq: list[str] = field(default_factory=list)        # 常见问题 Q&A，每个元素为 "Q: ... A: ..."
+    model_type: str = ""            # 型号/类别 (如 二类医疗器械、R型)
+    series: str = ""                # 品牌内部系列
+    net_content: str = ""           # 净含量/规格
+    storage: str = ""               # 贮存说明
+    usage_steps: str = ""           # 详细使用步骤
+    warnings: str = ""              # 注意事项/警告
+    search_text: str = ""           # 用于向量化的聚合搜索文本
 
     def to_payload(self) -> dict[str, Any]:
         return {
@@ -56,7 +67,55 @@ class ProductRecord:
             "concerns": self.concerns,
             "usage_notes": self.usage_notes,
             "source": self.source,
+            "efficacy": self.efficacy,
+            "core_efficacy": self.core_efficacy,
+            "faq": self.faq,
+            "model_type": self.model_type,
+            "series": self.series,
+            "net_content": self.net_content,
+            "storage": self.storage,
+            "usage_steps": self.usage_steps,
+            "warnings": self.warnings,
         }
+
+    def build_search_text(self) -> str:
+        """构建用于向量检索的聚合搜索文本"""
+        parts: list[str] = []
+        if self.name:
+            parts.append(f"产品名称: {self.name}")
+        if self.brand:
+            parts.append(f"品牌: {self.brand}")
+        if self.series:
+            parts.append(f"系列: {self.series}")
+        if self.category:
+            parts.append(f"类别: {self.category}")
+        if self.model_type:
+            parts.append(f"型号: {self.model_type}")
+        if self.efficacy:
+            parts.append(f"功效: {self.efficacy}")
+        if self.core_efficacy:
+            parts.append(f"核心功效: {self.core_efficacy}")
+        if self.skin_types:
+            parts.append(f"适用肤质: {'、'.join(self.skin_types)}")
+        if self.concerns:
+            parts.append(f"针对问题: {'、'.join(self.concerns)}")
+        if self.ingredients:
+            parts.append(f"核心成分: {'、'.join(self.ingredients[:30])}")
+        if self.net_content:
+            parts.append(f"规格: {self.net_content}")
+        if self.price_note:
+            parts.append(f"价格: {self.price_note}")
+        if self.usage_notes:
+            parts.append(f"使用说明: {self.usage_notes}")
+        if self.usage_steps:
+            parts.append(f"使用步骤: {self.usage_steps}")
+        if self.storage:
+            parts.append(f"贮存: {self.storage}")
+        if self.warnings:
+            parts.append(f"注意事项: {self.warnings}")
+        if self.faq:
+            parts.append(f"常见问题: {'; '.join(self.faq)}")
+        return "\n".join(parts)
 
 
 @dataclass(slots=True)

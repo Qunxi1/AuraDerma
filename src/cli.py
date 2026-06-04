@@ -272,9 +272,14 @@ def _build_runtime(model_override: str | None = None) -> tuple[SkincareAgent, Ap
     retriever = Retriever(qdrant, cfg.qdrant_collection_products, cfg.qdrant_collection_memory, cfg.qdrant_collection_docs)
     retriever.ensure_collections()
     llm = LLMClient(api_key=cfg.model_api_key, base_url=cfg.model_api_base, model=model_override or cfg.default_model)
+
+    # 使用本地 embedding 模型（DeepSeek API 不支持 embedding）
+    from llm import LocalEmbedder
+    embedder = LocalEmbedder()
+
     web = WebSearchClient(enabled=cfg.web_search_enabled)
     policy = MemoryPolicy()
-    agent = SkincareAgent(llm=llm, retriever=retriever, web=web, policy=policy)
+    agent = SkincareAgent(llm=llm, retriever=retriever, web=web, policy=policy, _embedder=embedder)
     store = MemoryStore(cfg.data_dir / "memory")
     skills = SkillManager(cfg.skills_dir, web)
     return agent, cfg, llm.model, store, skills
@@ -461,4 +466,30 @@ def ingest(path: Path) -> None:
         "path": str(result.path),
         "type": result.doc_type.value,
         "chunks": len(result.chunks),
+    }, ensure_ascii=False, indent=2))
+
+
+@main.command()
+@click.argument("path", type=click.Path(path_type=Path, exists=True))
+def ingest_products(path: Path) -> None:
+    """解析护肤品原始文本文件，结构化后 embedding 存入 Qdrant"""
+    _load_env()
+    cfg = load_config()
+    qdrant = QdrantClient(url=cfg.qdrant_url, api_key=cfg.qdrant_api_key)
+    retriever = Retriever(qdrant, cfg.qdrant_collection_products, cfg.qdrant_collection_memory, cfg.qdrant_collection_docs)
+    retriever.ensure_collections()
+
+    from ingest_products import ingest_products_to_qdrant
+    from llm import LocalEmbedder
+
+    embedder = LocalEmbedder()
+    records = ingest_products_to_qdrant(path, embedder, retriever)
+    click.echo(json.dumps({
+        "status": "ok",
+        "file": str(path),
+        "products_ingested": len(records),
+        "products": [
+            {"id": r.product_id, "name": r.name, "brand": r.brand, "concerns": r.concerns}
+            for r in records
+        ],
     }, ensure_ascii=False, indent=2))

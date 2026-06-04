@@ -28,3 +28,18 @@ class LLMClient:
     def embed(self, texts: list[str], embedding_model: str = "text-embedding-3-small") -> list[list[float]]:
         response = self._client.embeddings.create(model=embedding_model, input=texts)
         return [item.embedding for item in response.data]
+
+
+class LocalEmbedder:
+    """本地 embedding 模型（中文优化），用于向量检索。"""
+
+    def __init__(self, model_name: str = "BAAI/bge-small-zh-v1.5") -> None:
+        from sentence_transformers import SentenceTransformer
+
+        self.model_name = model_name
+        self._model = SentenceTransformer(model_name)
+        self.dim = self._model.get_embedding_dimension()
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        embeddings = self._model.encode(texts, normalize_embeddings=True, show_progress_bar=False)
+        return [emb.tolist() for emb in embeddings]

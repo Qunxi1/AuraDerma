@@ -22,14 +22,15 @@ class Retriever:
         self.docs_collection = docs_collection
 
     def search(self, collection: str, query_vector: list[float], limit: int = 5, filters: models.Filter | None = None) -> list[SearchHit]:
-        results = self.client.search(
+        # query_points 兼容本地模式和服务器模式
+        results = self.client.query_points(
             collection_name=collection,
-            query_vector=query_vector,
+            query=query_vector,
             limit=limit,
             query_filter=filters,
             with_payload=True,
         )
-        return [SearchHit(id=str(hit.id), score=hit.score or 0.0, payload=hit.payload or {}) for hit in results]
+        return [SearchHit(id=str(hit.id), score=hit.score or 0.0, payload=hit.payload or {}) for hit in results.points]
 
     def upsert_payload(self, collection: str, point_id: str, vector: list[float], payload: dict[str, Any]) -> None:
         self.client.upsert(
@@ -45,3 +46,12 @@ class Retriever:
                     collection_name=name,
                     vectors_config=models.VectorParams(size=vector_size, distance=models.Distance.COSINE),
                 )
+            else:
+                # 校验已有 collection 的向量维度是否匹配
+                info = self.client.get_collection(name)
+                existing_size = info.config.params.vectors.size
+                if existing_size != vector_size:
+                    raise ValueError(
+                        f"Collection '{name}' 向量维度为 {existing_size}，"
+                        f"但当前模型要求 {vector_size}。请删除旧 collection 后重试。"
+                    )
