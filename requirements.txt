@@ -5,5 +5,7 @@ openai>=1.40.0
 python-dotenv>=1.0.1
 pymupdf>=1.24.9
 python-docx>=1.1.2
+olefile>=0.47
+pywin32>=306
 requests>=2.32.3
 tiktoken>=0.7.0

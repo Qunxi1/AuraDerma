@@ -15,6 +15,7 @@ from prompts import (
     RETRIEVAL_PROMPT,
     SKILL_ROUTER_PROMPT,
     SYSTEM_PROMPT,
+    WEATHER_EXTRACT_PROMPT,
 )
 from retrieval import Retriever
 from skill_manager import SkillManager
@@ -90,6 +91,7 @@ class RetrievalResult:
     skill_names: list[str]
     memory_file_snippets: list[str]
     skill_body: str
+    weather_info: str = ""  # formatted weather data or empty
     # --- intent-aware fields ---
     intent: str = "single"
     regimen_goal: str = ""
@@ -316,7 +318,12 @@ class SkincareAgent:
         skill_plan = json_dumps_pretty(skill_router)
         skill_body = skill_manager.registry_body(skill_names)
 
-        # ⑥ Web search (仅在内部资源不足时)
+        # ⑥ Weather check (当技能路由器判定需要时)
+        weather_info = ""
+        if "weather_check" in skill_names:
+            weather_info = self._fetch_weather(ctx, memory_store, skill_manager)
+
+        # ⑦ Web search (仅在内部资源不足时)
         need_web = self._should_use_web(product_hits, memory_hits, doc_hits, index_recall_lines, skill_names)
         web_notes: list[str] = []
         if need_web and self.web.enabled:
@@ -341,6 +348,7 @@ class SkincareAgent:
             skill_names=skill_names,
             memory_file_snippets=memory_file_snippets,
             skill_body=skill_body,
+            weather_info=weather_info,
             intent=intent.intent,
             regimen_goal=intent.goal,
             regimen_plan=regimen_plan,
@@ -404,6 +412,9 @@ class SkincareAgent:
 
             网页搜索参考:
             {chr(10).join(route.web_notes) if route.web_notes else '无'}
+
+            当地气候数据:
+            {route.weather_info if route.weather_info else '无'}
             """
         ).strip()
         return self.llm.chat(ANSWER_PROMPT, context_block)
@@ -449,6 +460,9 @@ class SkincareAgent:
 
             网页搜索参考:
             {chr(10).join(route.web_notes) if route.web_notes else '无'}
+
+            当地气候数据:
+            {route.weather_info if route.weather_info else '无'}
 
             ── 回答要求 ──
             请按品类分类回答，每个品类下列出对应的产品推荐。
@@ -524,6 +538,9 @@ class SkincareAgent:
             网页搜索参考:
             {chr(10).join(route.web_notes) if route.web_notes else '无'}
 
+            当地气候数据:
+            {route.weather_info if route.weather_info else '无'}
+
             ── 回答要求 ──
             请按照日间→夜间→周期护理的时间线组织回答。
             每个步骤先说明目的，再列出内部召回的产品推荐，最后如需补充可提及网页搜索。
@@ -588,6 +605,45 @@ class SkincareAgent:
         if index_recall_lines:
             return False
         return "web_search" in skill_names or len(skill_names) == 0
+
+    def _fetch_weather(self, ctx: AgentContext, memory_store: MemoryStore, skill_manager: SkillManager) -> str:
+        """Extract city from question/memory and fetch weather data."""
+        # 构建 memory profile 摘要帮助 LLM 判断城市
+        profile_lines = ctx.memory.summary_lines(max_items_per_scope=20)
+
+        extract_prompt = dedent(
+            f"""
+            用户问题:
+            {ctx.question}
+
+            用户画像记忆:
+            {chr(10).join(profile_lines) if profile_lines else '无'}
+
+            请判断用户所在城市，返回 JSON。
+            """
+        ).strip()
+        raw = self.llm.chat(
+            SYSTEM_PROMPT,
+            f"{WEATHER_EXTRACT_PROMPT}\n\n{extract_prompt}",
+            temperature=0.0,
+        )
+        obj = self._parse_json_obj(raw)
+        city = obj.get("city")
+        if not city:
+            return ""
+
+        try:
+            weather = skill_manager.weather.fetch(city)
+            return (
+                f"用户所在城市：{weather.get('city', city)}"
+                f"{' (' + weather['region'] + ')' if weather.get('region') else ''}\n"
+                f"当前气温：{weather['temperature']}°C"
+                f" (体感 {weather['feels_like']}°C)\n"
+                f"当前湿度：{weather['humidity']}%\n"
+                f"天气状况：{weather['condition']}"
+            )
+        except Exception as e:
+            return f"天气查询失败: {e}"
 
     def _embed_query(self, question: str) -> list[float]:
         if self._embedder is not None:

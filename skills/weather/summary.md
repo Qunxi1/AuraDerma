@@ -1,0 +1,1 @@
+Fetch current temperature and humidity for a given city using the wttr.in weather service. Returns structured temperature, humidity, and weather condition data.

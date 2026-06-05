@@ -24,11 +24,19 @@ def _load_skill(skill_name: str):
 _ws_mod = _load_skill("web_search")
 WebSearchSkill = _ws_mod.WebSearchSkill
 
+_fr_mod = _load_skill("file_read")
+FileReadSkill = _fr_mod.FileReadSkill
+
+_wt_mod = _load_skill("weather")
+WeatherSkill = _wt_mod.WeatherSkill
+
 
 class SkillManager:
     def __init__(self, skills_root: Path, web_client: WebSearchClient) -> None:
         self.registry = SkillsRegistry(skills_root)
         self.web_search = WebSearchSkill(web_client)
+        self.file_read = FileReadSkill  # static class, no init needed
+        self.weather = WeatherSkill()
 
     def registry_summary(self) -> str:
         return self.registry.as_summary_block()
@@ -38,3 +46,6 @@ class SkillManager:
 
     def web_search_payload(self, query: str, top_k: int = 5) -> dict:
         return self.web_search.to_tool_payload(query=query, top_k=top_k)
+
+    def read_file(self, path: str | Path) -> dict:
+        return self.file_read.read(path)
