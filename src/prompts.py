@@ -91,7 +91,7 @@ Rules:
 - intent=single: The user explicitly asked for exactly one product category.
   Examples: "推荐一款爽肤水" "有什么好用的精华" "痘痘用什么面膜"
 - intent=multi: The user explicitly named 2+ specific categories they want.
-  Examples: "推荐一瓶水和一瓶乳液" "想要水和霜" "水乳和面膜" "精华和面霜一起推荐"
+  Examples: "推荐一瓶水和一瓶乳液" "想要水和霜" "水乳和面膜" "精华和面霜一起推荐" "我要水、乳、精华和面膜"
   This is NOT a skincare goal, just multiple product types.
   Set explicit_categories to the list of categories mentioned.
 - intent=regimen: The user described a skincare goal without specifying product types, or asked for a full routine.
