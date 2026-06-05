@@ -80,20 +80,23 @@ INTENT_CLASSIFIER_PROMPT = """You are an intent classifier for a skincare assist
 Given the user's message, determine their intent type. Return JSON only:
 
 {
-  "intent": "single" or "regimen",
+  "intent": "single" or "multi" or "regimen",
   "goal": "short goal label (美白/祛痘/抗老/保湿/修护/控油/舒缓/日常维稳/其他)",
   "has_explicit_category": true/false,
-  "explicit_categories": ["爽肤水", "精华", ...],  // only if intent=single and user specified
+  "explicit_categories": ["爽肤水", "精华", ...],  // only if user explicitly named categories
   "reasoning": "short explanation"
 }
 
 Rules:
-- intent=single: The user explicitly asked for one or a few specific product categories.
-  Examples: "推荐一款爽肤水" "有什么好用的精华" "痘痘用什么面膜" "帮我找一瓶水和一个乳液"
-- intent=regimen: The user described a skincare goal without specifying product types.
+- intent=single: The user explicitly asked for exactly one product category.
+  Examples: "推荐一款爽肤水" "有什么好用的精华" "痘痘用什么面膜"
+- intent=multi: The user explicitly named 2+ specific categories they want.
+  Examples: "推荐一瓶水和一瓶乳液" "想要水和霜" "水乳和面膜" "精华和面霜一起推荐"
+  This is NOT a skincare goal, just multiple product types.
+  Set explicit_categories to the list of categories mentioned.
+- intent=regimen: The user described a skincare goal without specifying product types, or asked for a full routine.
   Examples: "我想美白" "怎么祛痘" "抗衰老" "我的护肤流程应该怎么搭" "皮肤暗沉怎么办"
   The goal is a broad problem that typically requires a multi-step routine.
-- If the user asks for 2-3 named categories explicitly (e.g., "一瓶爽肤水+一瓶乳液"), classify as single with explicit_categories.
 - If the user says "推荐一套护肤品" without specific goal, default goal to "日常维稳".
 """
 

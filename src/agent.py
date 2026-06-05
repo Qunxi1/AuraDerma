@@ -94,6 +94,7 @@ class RetrievalResult:
     intent: str = "single"
     regimen_goal: str = ""
     regimen_plan: RegimenPlan | None = None
+    multi_category_hits: dict[str, list] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -214,13 +215,14 @@ class SkincareAgent:
         retrieval_plan: str
         product_hits: list
         regimen_plan: RegimenPlan | None = None
+        multi_category_hits: dict[str, list] = {}
 
         if intent.intent == "regimen":
             # ── 护肤体系模式：LLM 规划品类 → 逐品类 RAG ──
             regimen_plan = self.plan_regimen(ctx.question, intent.goal)
 
             # 为每个唯一的 search_query 执行检索
-            seen_queries: dict[str, list] = {}  # query → hits
+            seen_queries: dict[str, list] = {}
             for step in regimen_plan.steps:
                 sq = step.search_query
                 if sq not in seen_queries:
@@ -230,7 +232,7 @@ class SkincareAgent:
                     )
                 step.product_hits = seen_queries[sq]
 
-            # 合并所有品类命中（去重，用于 skill_router 概览）
+            # 合并所有品类命中（去重）
             all_hit_ids: set[str] = set()
             merged_hits: list = []
             for hits in seen_queries.values():
@@ -245,10 +247,35 @@ class SkincareAgent:
                 f"规划了 {len(regimen_plan.steps)} 个步骤，"
                 f"覆盖品类：{'、'.join(dict.fromkeys(s.category for s in regimen_plan.steps))}"
             )
+
+        elif intent.intent == "multi" and len(intent.explicit_categories) >= 2:
+            # ── 多品类模式：用户显式要多个品类，逐品类检索 ──
+            multi_category_hits: dict[str, list] = {}
+            for cat in intent.explicit_categories:
+                cat_query = f"{ctx.question} {cat} 推荐"
+                cat_emb = self._embed_query(cat_query)
+                cat_hits = self.retriever.search(
+                    self.retriever.products_collection, cat_emb, limit=4
+                )
+                multi_category_hits[cat] = cat_hits
+
+            # 合并去重
+            all_hit_ids = set()
+            merged_hits = []
+            for hits in multi_category_hits.values():
+                for h in hits:
+                    if h.id not in all_hit_ids:
+                        all_hit_ids.add(h.id)
+                        merged_hits.append(h)
+            product_hits = merged_hits
+
+            retrieval_plan = (
+                f"[多品类模式] 用户指定品类：{'、'.join(intent.explicit_categories)}"
+            )
+
         else:
-            # ── 单品模式：现有流程 + 品类感知 ──
+            # ── 单品类模式：现有流程 ──
             retrieval_plan = self.llm.chat(SYSTEM_PROMPT, f"{RETRIEVAL_PROMPT}\n\n用户问题：{ctx.question}")
-            # 如有显式品类，构造更精准的查询
             if intent.explicit_categories:
                 enhanced_query = f"{ctx.question} {' '.join(intent.explicit_categories)}"
                 enhanced_emb = self._embed_query(enhanced_query)
@@ -317,6 +344,7 @@ class SkincareAgent:
             intent=intent.intent,
             regimen_goal=intent.goal,
             regimen_plan=regimen_plan,
+            multi_category_hits=multi_category_hits,
         )
 
     # ------------------------------------------------------------------
@@ -328,6 +356,8 @@ class SkincareAgent:
 
         if route.intent == "regimen" and route.regimen_plan:
             return self._answer_regimen(ctx, route)
+        elif route.intent == "multi" and route.multi_category_hits:
+            return self._answer_multi(ctx, route)
         else:
             return self._answer_single(ctx, route)
 
@@ -376,6 +406,58 @@ class SkincareAgent:
             {chr(10).join(route.web_notes) if route.web_notes else '无'}
             """
         ).strip()
+        return self.llm.chat(ANSWER_PROMPT, context_block)
+
+    def _answer_multi(self, ctx: AgentContext, route: RetrievalResult) -> str:
+        """为 multi 模式生成回答：按品类分组展示推荐"""
+        category_blocks: list[str] = []
+        for cat, hits in route.multi_category_hits.items():
+            block = f"\n【品类：{cat}】"
+            if hits:
+                block += f"\n  匹配到 {len(hits)} 款产品："
+                for h in hits:
+                    p = h.payload
+                    name = p.get("name", "?")
+                    brand = p.get("brand", "?")
+                    price = p.get("price_cny", "")
+                    price_str = f" (¥{price})" if price else ""
+                    concerns = "、".join(p.get("concerns", [])[:4])
+                    block += f"\n  · [{brand}] {name}{price_str} — {concerns}  [score={h.score:.2f}]"
+            else:
+                block += "\n  (当前知识库暂无该品类产品)"
+            category_blocks.append(block)
+
+        context_block = dedent(
+            f"""
+            用户问题:
+            {ctx.question}
+
+            意图模式: multi
+            用户指定品类: {'、'.join(route.multi_category_hits.keys())}
+
+            ── 按品类推荐 ──
+            {''.join(category_blocks)}
+
+            记忆索引:
+            {chr(10).join(route.memory_index_lines) if route.memory_index_lines else '无'}
+
+            需要打开的记忆ID:
+            {', '.join(route.relevant_memory_ids) if route.relevant_memory_ids else '无'}
+
+            打开的记忆原文片段:
+            {chr(10).join(route.memory_file_snippets) if route.memory_file_snippets else '无'}
+
+            网页搜索参考:
+            {chr(10).join(route.web_notes) if route.web_notes else '无'}
+
+            ── 回答要求 ──
+            请按品类分类回答，每个品类下列出对应的产品推荐。
+            说明每个产品的品牌、价格，以及为什么适合用户。
+            如果某品类内部无产品，明确说"当前知识库暂无该品类产品"，不要编造。
+            最后可以给出搭配建议和使用先后顺序（如有需要）。
+            """
+        ).strip()
+
         return self.llm.chat(ANSWER_PROMPT, context_block)
 
     def _answer_regimen(self, ctx: AgentContext, route: RetrievalResult) -> str:
