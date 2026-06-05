@@ -1,3 +1,0 @@
-feat: add weather skill, PDF support, and climate-adaptive recommendations
-
-Implement FileReadSkill with PDF support via pymupdf, add WeatherSkill via wttr.in (no API key), integrate weather into agent pipeline, add climate prompts, remove stale skill stubs, add olefile and pywin32 deps.
