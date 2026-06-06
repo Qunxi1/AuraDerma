@@ -14,6 +14,7 @@ from agent import AgentContext, SkincareAgent
 from config import AppConfig, load_config
 from llm import LLMClient
 from memory import MemoryBundle, MemoryPolicy, MemoryStore
+from reporter import ProgressReporter
 from retrieval import Retriever
 from skill_manager import SkillManager
 from web_search import WebSearchClient
@@ -76,6 +77,17 @@ def _aris_readline(
     prompt_str = f"\x1b[36m\x1b[1mAuraDerma \x1b[34m[{model_name}] \x1b[33m\x1b[1m> \x1b[0m"
     _prompt_visible_len = 15 + len(model_name)  # "AuraDerma " + "[" + name + "] " + "› "
 
+    def _display_width(s: str) -> int:
+        """计算字符串在终端中的实际显示宽度（中文占2列，英文占1列）。"""
+        width = 0
+        for ch in s:
+            if '\u4e00' <= ch <= '\u9fff' or '\u3000' <= ch <= '\u303f' \
+               or '\uff00' <= ch <= '\uffef':
+                width += 2
+            else:
+                width += 1
+        return width
+
     def _compute_matches(line: str) -> list[tuple[str, str]]:
         """Return list of (name, description) that match the current input."""
         if line.startswith("/model ") and len(line) > 7:
@@ -136,7 +148,9 @@ def _aris_readline(
             sys.stdout.write(f"\x1b[{row_count - 1}A")
 
         # Position cursor within input text (<ESC>[G is 1-indexed)
-        col = _prompt_visible_len + 1 + cursor
+        # Use display width instead of character index for CJK support
+        pre_cursor = "".join(buf[:cursor])
+        col = _prompt_visible_len + 1 + _display_width(pre_cursor)
         sys.stdout.write(f"\x1b[{col}G")
         sys.stdout.flush()
 
@@ -285,7 +299,8 @@ def _build_runtime(model_override: str | None = None) -> tuple[SkincareAgent, Ap
 
     web = WebSearchClient(enabled=cfg.web_search_enabled)
     policy = MemoryPolicy()
-    agent = SkincareAgent(llm=llm, retriever=retriever, web=web, policy=policy, _embedder=embedder)
+    reporter = ProgressReporter()
+    agent = SkincareAgent(llm=llm, retriever=retriever, web=web, policy=policy, _embedder=embedder, reporter=reporter)
     store = MemoryStore(cfg.data_dir / "memory")
     skills = SkillManager(cfg.skills_dir, web)
     return agent, cfg, llm.model, store, skills

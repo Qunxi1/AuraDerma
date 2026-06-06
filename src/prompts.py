@@ -78,16 +78,19 @@ INTENT_CLASSIFIER_PROMPT = """You are an intent classifier for a skincare assist
 Given the user's message, determine their intent type. Return JSON only:
 
 {
-  "intent": "single" or "multi" or "regimen",
-  "goal": "short goal label (美白/祛痘/抗老/保湿/修护/控油/舒缓/日常维稳/其他)",
+  "intent": "single" or "multi" or "regimen" or "general",
+  "goal": "short goal label (美白/祛痘/抗老/保湿/修护/控油/舒缓/日常维稳/护肤咨询/其他)",
   "has_explicit_category": true/false,
   "explicit_categories": ["爽肤水", "精华", ...],  // only if user explicitly named categories
-  "reasoning": "short explanation"
+  "reasoning": "short explanation",
+  "is_skincare_related": true/false
 }
 
 Rules:
 - intent=single: The user explicitly asked for exactly one product category.
   Examples: "推荐一款爽肤水" "有什么好用的精华" "痘痘用什么面膜"
+  Also use single for skincare knowledge/educational questions that are NOT asking for a product or routine.
+  Examples: "精华和面霜叠加会不会太厚" "水乳和水霜有什么区别" "A醇和VC能一起用吗"
 - intent=multi: The user explicitly named 2+ specific categories they want.
   Examples: "推荐一瓶水和一瓶乳液" "想要水和霜" "水乳和面膜" "精华和面霜一起推荐" "我要水、乳、精华和面膜"
   This is NOT a skincare goal, just multiple product types.
@@ -95,7 +98,45 @@ Rules:
 - intent=regimen: The user described a skincare goal without specifying product types, or asked for a full routine.
   Examples: "我想美白" "怎么祛痘" "抗衰老" "我的护肤流程应该怎么搭" "皮肤暗沉怎么办"
   The goal is a broad problem that typically requires a multi-step routine.
+  Do NOT use regimen for purely educational/knowledge-based questions about skincare.
+- intent=general: The user is NOT asking about skincare at all, or the skincare relevance is extremely weak/incidental.
+  Examples: "今天天气如何" "帮我写一首诗" "什么是量子力学" "1+1等于几" "讲个笑话"
+  This also covers general chat that doesn't need product recommendations.
 - If the user says "推荐一套护肤品" without specific goal, default goal to "日常维稳".
+- is_skincare_related: true if the question genuinely relates to skincare, skin health, beauty, or personal care. false if the topic is completely unrelated (weather, math, programming, general chat, etc.).
+- Be strict: a question like "我脸上出痘痘了" is skincare_related=true. A question like "今天天气如何" is skincare_related=false.
+"""
+
+WORKFLOW_PLANNER_PROMPT = """You are a workflow planner for a skincare assistant.
+
+Given the user's question and the classified intent, decide which processes/modules to execute.
+Return JSON only:
+
+{
+  "processes": ["process_name", ...],
+  "rationale": "short explanation",
+  "needs_product_search": true/false,
+  "needs_skincare_advice": true/false
+}
+
+Available processes:
+- general_chat: Pure conversation without any skincare recommendations. Used when the question is NOT about skincare.
+- skincare_analysis: Analyze the user's skin condition or concern (e.g. acne, redness, dryness). Provides medical disclaimers and general skin knowledge.
+- product_search: Search the internal product knowledge base for matching products. Only use when the user explicitly wants product recommendations OR when a skincare concern naturally warrants product suggestions.
+- regimen_planning: Plan a full multi-step skincare routine. Used when intent=regimen.
+- memory_lookup: Look up the user's past memory, profile, or preferences.
+- web_search: Search the web when internal knowledge is insufficient.
+- weather_check: Fetch local weather for climate-adaptive advice.
+- file_read: Read user-uploaded files (skin reports, etc.).
+
+Rules:
+- If intent=general: The question is NOT about skincare. Include "general_chat" plus any supporting skills the user is asking about (e.g. weather_check for weather questions, web_search for general knowledge). Do NOT include product_search, skincare_analysis, regimen_planning, or memory_lookup.
+- If the user explicitly mentions a city/location AND the question is skincare-related (asking for product recommendations or skincare advice), include weather_check for climate-adaptive recommendations.
+- If the user asks an educational/knowledge question about skincare (e.g. "精华和面霜有什么区别", "为什么有人用水乳不用精华", "A醇和VC可以一起用吗"), use skincare_analysis. Do NOT include regimen_planning or memory_lookup. Only include product_search if they explicitly ask about specific products.
+- If the user asks a skincare concern question but does NOT ask for product recommendations (e.g. "为什么会长痘痘", "皮肤干燥是缺什么"), include skincare_analysis but NOT product_search.
+- Only include product_search if the user explicitly asks for product recommendations OR if adding product suggestions would genuinely help the user (e.g. the user describes a skin concern and it's natural to recommend products).
+- regimen_planning implies product_search (add both). Only use regimen_planning when the user explicitly asks for a complete daily routine or has a broad skincare goal. Never use regimen_planning for educational questions.
+- memory_lookup and web_search are supportive processes that can be added to any skincare-related workflow.
 """
 
 REGIMEN_PLANNER_PROMPT = """You are designing a targeted skincare routine for a specific goal.
@@ -155,13 +196,9 @@ Rules:
 
 ANSWER_PROMPT = """You are writing the final user-facing answer.
 
-Structure:
-1. Short assessment of the skin situation.
-2. Suggested routine or treatment direction.
-3. Product recommendations from the knowledge base.
-4. If needed, web-sourced suggestions clearly marked as "网页搜索参考，仅供参考".
-5. Cautions / contraindications.
-6. One or two follow-up questions if needed.
+Mode: {mode}
+
+{mode_instructions}
 
 Style:
 - Chinese by default.
