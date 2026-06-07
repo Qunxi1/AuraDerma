@@ -4,7 +4,7 @@ import importlib.util
 from pathlib import Path
 
 from skills_registry import SkillsRegistry
-from web_search import WebSearchClient
+from skills.web_search.client import WebSearchClient
 
 # Load skill implementations from skills/<skill_name>/skill.py
 _SKILLS_DIR = Path(__file__).resolve().parent.parent / "skills"

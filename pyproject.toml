@@ -26,7 +26,7 @@ ad = "ad_entry:ad_main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
-py-modules = ["auraderma", "ad_entry", "cli", "agent", "config", "ingest", "llm", "memory", "prompts", "reporter", "retrieval", "schema", "skill_manager", "skills_registry", "web_search"]
+py-modules = ["auraderma", "ad_entry", "cli", "agent", "config", "ingest", "llm", "memory", "prompts", "reporter", "retrieval", "schema", "skill_manager", "skills_registry"]
 
 [tool.ruff]
 line-length = 100

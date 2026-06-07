@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from web_search import WebSearchClient
+from skills.web_search.client import WebSearchClient
 
 
 class WebSearchSkill:

@@ -23,7 +23,7 @@ from prompts import (
 from reporter import NullReporter, ProgressReporter
 from retrieval import Retriever
 from skill_manager import SkillManager
-from web_search import WebSearchClient
+from skills.web_search.client import WebSearchClient
 
 # ======================================================================
 # 后向兼容导出 —— 新代码应直接从 services/ 引用

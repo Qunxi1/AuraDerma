@@ -10,6 +10,11 @@ import click
 from dotenv import load_dotenv
 from qdrant_client import QdrantClient
 
+# 将项目根目录加入 sys.path，使 skills/ 可导入
+_PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+
 from agent import AgentContext, SkincareAgent
 from console.commands import (
     COMMAND_SPECS,
@@ -27,7 +32,7 @@ from memory import MemoryBundle, MemoryPolicy, MemoryStore
 from reporter import ProgressReporter
 from retrieval import Retriever
 from skill_manager import SkillManager
-from web_search import WebSearchClient
+from skills.web_search.client import WebSearchClient
 from search_config import ensure_search_config
 
 log = get_logger("auraderma.cli")

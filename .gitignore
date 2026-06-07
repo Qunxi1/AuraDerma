@@ -8,6 +8,8 @@
 __pycache__/
 *.py[cod]
 *.egg-info/
+.egg/
+*.egg
 .build/
 dist/
 build/
@@ -28,6 +30,20 @@ logs/
 # Qdrant downloaded binary
 qdrant.zip
 *.zip
+
+# Reasonix / IDE project files
+.codegraph/
+.reasonix/
+DeepSeek-Reasonix/
+
+# Node (if any frontend)
+node_modules/
+
+# Test & coverage
+coverage/
+.coverage
+.coverage.*
+htmlcov/
 
 # OS / editor files
 .DS_Store

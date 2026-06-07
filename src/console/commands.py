@@ -138,7 +138,7 @@ def _apply_memory_to_bundle(bundle, item) -> None:
 
 
 def _show_search_engines(session) -> None:
-    from web_search import SEARCH_PROVIDERS
+    from skills.web_search.client import SEARCH_PROVIDERS
 
     cfg_path = Path.home() / ".auraderma" / "search_config.json"
     click.echo(f"当前搜索提供方：{session.agent.web.current_provider_label}")
