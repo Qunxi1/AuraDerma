@@ -1,0 +1,305 @@
+from __future__ import annotations
+
+from dataclasses import asdict
+from textwrap import dedent
+
+from agent import (
+    AgentContext,
+    MODE_INSTRUCTIONS,
+    RetrievalResult,
+    DEFAULT_INSTRUCTIONS,
+    json_dumps_pretty,
+)
+from core import get_logger
+
+log = get_logger("auraderma.answer")
+
+
+class AnswerService:
+    """回答生成服务。
+
+    根据检索结果和意图模式，生成最终用户回答。
+    """
+
+    def __init__(self, llm):
+        self._llm = llm
+
+    def answer(self, ctx: AgentContext, route: RetrievalResult) -> str:
+        """生成回答，根据模式路由到不同策略。
+
+        Args:
+            ctx: 代理上下文
+            route: 检索结果
+
+        Returns:
+            最终回答文本
+        """
+        if route.is_general_chat:
+            return self._answer_general(ctx, route)
+
+        log.info(
+            "生成护肤回答: intent=%s regimen=%s multi=%s",
+            route.intent,
+            route.intent == "regimen" and route.regimen_plan is not None,
+            route.intent == "multi" and bool(route.multi_category_hits),
+        )
+
+        if route.intent == "regimen" and route.regimen_plan:
+            return self._answer_regimen(ctx, route)
+        elif route.intent == "multi" and route.multi_category_hits:
+            return self._answer_multi(ctx, route)
+        else:
+            return self._answer_single(ctx, route)
+
+    def _answer_single(self, ctx: AgentContext, route: RetrievalResult) -> str:
+        mode = "product_search"
+        mode_instructions = MODE_INSTRUCTIONS.get(mode, DEFAULT_INSTRUCTIONS)
+
+        if route.workflow_plan and not route.workflow_plan.needs_product_search:
+            mode = "skincare_analysis"
+            mode_instructions = MODE_INSTRUCTIONS.get(mode, DEFAULT_INSTRUCTIONS)
+
+        from prompts import ANSWER_PROMPT
+        answer_prompt_filled = ANSWER_PROMPT.format(
+            mode=mode, mode_instructions=mode_instructions,
+        )
+
+        context_block = dedent(f"""
+            用户问题:
+            {ctx.question}
+
+            意图模式: {route.intent} | 护肤目标: {route.regimen_goal}
+
+            检索计划:
+            {route.retrieval_plan}
+
+            工作流规划:
+            {json_dumps_pretty(asdict(route.workflow_plan)) if route.workflow_plan else '无'}
+
+            记忆索引:
+            {chr(10).join(route.memory_index_lines) if route.memory_index_lines else '无'}
+
+            索引召回:
+            {chr(10).join(route.index_recall_lines) if route.index_recall_lines else '无'}
+
+            需要打开的记忆ID:
+            {', '.join(route.relevant_memory_ids) if route.relevant_memory_ids else '无'}
+
+            需要调用的技能:
+            {', '.join(route.skill_names) if route.skill_names else '无'}
+
+            技能注册表正文:
+            {route.skill_body if route.skill_body else '无'}
+
+            技能路由:
+            {route.skill_plan}
+
+            打开的记忆原文片段:
+            {chr(10).join(route.memory_file_snippets) if route.memory_file_snippets else '无'}
+
+            内部产品召回:
+            {self._format_hits(route.product_hits)}
+
+            记忆召回:
+            {self._format_hits(route.memory_hits)}
+
+            文档召回:
+            {self._format_hits(route.doc_hits)}
+
+            网页搜索参考:
+            {chr(10).join(route.web_notes) if route.web_notes else '无'}
+
+            当地气候数据:
+            {route.weather_info if route.weather_info else '无'}
+        """).strip()
+        return self._llm.chat(answer_prompt_filled, context_block)
+
+    def _answer_multi(self, ctx: AgentContext, route: RetrievalResult) -> str:
+        mode = "product_search"
+        mode_instructions = MODE_INSTRUCTIONS.get(mode, DEFAULT_INSTRUCTIONS)
+
+        from prompts import ANSWER_PROMPT
+        answer_prompt_filled = ANSWER_PROMPT.format(
+            mode=mode, mode_instructions=mode_instructions,
+        )
+
+        category_blocks: list[str] = []
+        for cat, hits in route.multi_category_hits.items():
+            block = f"\n【品类：{cat}】"
+            if hits:
+                block += f"\n  匹配到 {len(hits)} 款产品："
+                for h in hits:
+                    p = h.payload
+                    name = p.get("name", "?")
+                    brand = p.get("brand", "?")
+                    price = p.get("price_cny", "")
+                    price_str = f" (¥{price})" if price else ""
+                    concerns = "、".join(p.get("concerns", [])[:4])
+                    block += (
+                        f"\n  · [{brand}] {name}{price_str}"
+                        f" — {concerns}  [score={h.score:.2f}]"
+                    )
+            else:
+                block += "\n  (当前知识库暂无该品类产品)"
+            category_blocks.append(block)
+
+        context_block = dedent(f"""
+            用户问题:
+            {ctx.question}
+
+            意图模式: multi
+            用户指定品类: {'、'.join(route.multi_category_hits.keys())}
+
+            ── 按品类推荐 ──
+            {''.join(category_blocks)}
+
+            记忆索引:
+            {chr(10).join(route.memory_index_lines) if route.memory_index_lines else '无'}
+
+            需要打开的记忆ID:
+            {', '.join(route.relevant_memory_ids) if route.relevant_memory_ids else '无'}
+
+            打开的记忆原文片段:
+            {chr(10).join(route.memory_file_snippets) if route.memory_file_snippets else '无'}
+
+            网页搜索参考:
+            {chr(10).join(route.web_notes) if route.web_notes else '无'}
+
+            当地气候数据:
+            {route.weather_info if route.weather_info else '无'}
+
+            ── 回答要求 ──
+            请按品类分类回答，每个品类下列出对应的产品推荐。
+            说明每个产品的品牌、价格，以及为什么适合用户。
+            如果某品类内部无产品，明确说"当前知识库暂无该品类产品"，不要编造。
+            最后可以给出搭配建议和使用先后顺序（如有需要）。
+        """).strip()
+        return self._llm.chat(answer_prompt_filled, context_block)
+
+    def _answer_general(self, ctx: AgentContext, route: RetrievalResult) -> str:
+        mode = "general_chat"
+        mode_instructions = MODE_INSTRUCTIONS.get(mode, DEFAULT_INSTRUCTIONS)
+
+        from prompts import ANSWER_PROMPT
+        answer_prompt_filled = ANSWER_PROMPT.format(
+            mode=mode, mode_instructions=mode_instructions,
+        )
+
+        weather_section = (
+            f"当地气候数据:\n{route.weather_info}" if route.weather_info else ""
+        )
+        web_section = (
+            f"网页搜索参考:\n{chr(10).join(route.web_notes)}" if route.web_notes else ""
+        )
+
+        context_block = dedent(f"""
+            用户问题:
+            {ctx.question}
+
+            这是一次纯聊天对话。不要涉及任何护肤、美容、产品推荐相关的内容。
+            请直接用中文回答用户的问题，保持友好和帮助性。
+
+            {weather_section}
+            {web_section}
+        """).strip()
+        return self._llm.chat(answer_prompt_filled, context_block)
+
+    def _answer_regimen(self, ctx: AgentContext, route: RetrievalResult) -> str:
+        plan = route.regimen_plan
+        assert plan is not None
+
+        mode = "regimen_planning"
+        mode_instructions = MODE_INSTRUCTIONS.get(mode, DEFAULT_INSTRUCTIONS)
+
+        from prompts import ANSWER_PROMPT
+        answer_prompt_filled = ANSWER_PROMPT.format(
+            mode=mode, mode_instructions=mode_instructions,
+        )
+
+        regimen_blocks: list[str] = []
+
+        def _fmt_group(label: str, steps) -> str:
+            if not steps:
+                return ""
+            lines = [f"\n【{label}】"]
+            for step in steps:
+                lines.append(f"\n  ▶ {step.category} — {step.purpose}")
+                lines.append(f"     检索词: {step.search_query}")
+                if step.product_hits:
+                    lines.append(f"     内部召回 ({len(step.product_hits)} 款):")
+                    for h in step.product_hits:
+                        p = h.payload
+                        name = p.get("name", "?")
+                        brand = p.get("brand", "?")
+                        price = p.get("price_cny", "")
+                        price_str = f" ¥{price}" if price else ""
+                        concerns = "、".join(p.get("concerns", [])[:4])
+                        lines.append(
+                            f"       score={h.score:.2f} | [{brand}] {name}{price_str}"
+                            f" | {concerns}",
+                        )
+                else:
+                    lines.append("     (内部暂无匹配产品，建议网页搜索补充)")
+            return "\n".join(lines)
+
+        regimen_blocks.append(_fmt_group("☀️ 日间护理", plan.morning_steps))
+        regimen_blocks.append(_fmt_group("🌙 夜间护理", plan.evening_steps))
+        regimen_blocks.append(_fmt_group("📅 周期护理", plan.periodic_steps))
+
+        must_have_str = "、".join(plan.must_have_categories) if plan.must_have_categories else "无"
+        avoid_str = "、".join(plan.avoid_ingredients) if plan.avoid_ingredients else "无"
+
+        context_block = dedent(f"""
+            用户问题:
+            {ctx.question}
+
+            意图模式: regimen | 护肤目标: {plan.goal}
+            目标说明: {plan.goal_explanation}
+
+            ── 护肤体系规划 ──
+            {''.join(regimen_blocks)}
+
+            ── 体系约束 ──
+            必须覆盖的品类: {must_have_str}
+            建议避免的成分: {avoid_str}
+            品类优先级: {'、'.join(plan.category_priority) if plan.category_priority else '无'}
+            备注: {plan.notes if plan.notes else '无'}
+
+            记忆索引:
+            {chr(10).join(route.memory_index_lines) if route.memory_index_lines else '无'}
+
+            需要打开的记忆ID:
+            {', '.join(route.relevant_memory_ids) if route.relevant_memory_ids else '无'}
+
+            打开的记忆原文片段:
+            {chr(10).join(route.memory_file_snippets) if route.memory_file_snippets else '无'}
+
+            网页搜索参考:
+            {chr(10).join(route.web_notes) if route.web_notes else '无'}
+
+            当地气候数据:
+            {route.weather_info if route.weather_info else '无'}
+
+            ── 回答要求 ──
+            请按照日间→夜间→周期护理的时间线组织回答。
+            每个步骤先说明目的，再列出内部召回的产品推荐，最后如需补充可提及网页搜索。
+            如果某品类内部无产品，明确指出"当前知识库暂无该品类产品"，不要编造。
+            最后给出完整的使用流程总结和注意事项。
+        """).strip()
+        return self._llm.chat(answer_prompt_filled, context_block)
+
+    @staticmethod
+    def _format_hits(hits) -> str:
+        if not hits:
+            return "无"
+        lines = []
+        for hit in hits:
+            payload = hit.payload
+            title = (
+                payload.get("name")
+                or payload.get("title")
+                or payload.get("summary")
+                or payload.get("text", "")[:80]
+            )
+            lines.append(f"- score={hit.score:.3f} id={hit.id} {title}")
+        return "\n".join(lines)

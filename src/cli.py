@@ -11,7 +11,17 @@ from dotenv import load_dotenv
 from qdrant_client import QdrantClient
 
 from agent import AgentContext, SkincareAgent
+from console.commands import (
+    COMMAND_SPECS,
+    MODEL_CHOICES,
+    banner,
+    handle_command,
+    help_text,
+    model_lines,
+)
+from console.readline import create_readline
 from config import AppConfig, load_config
+from core import get_logger
 from llm import LLMClient
 from memory import MemoryBundle, MemoryPolicy, MemoryStore
 from reporter import ProgressReporter
@@ -20,259 +30,11 @@ from skill_manager import SkillManager
 from web_search import WebSearchClient
 from search_config import ensure_search_config
 
+log = get_logger("auraderma.cli")
 
-@dataclass(slots=True)
-class CommandSpec:
-    name: str
-    description: str
-    usage: str
-
-
-COMMAND_SPECS: list[CommandSpec] = [
-    CommandSpec("/help", "show command help", "/help"),
-    CommandSpec("/model", "switch or inspect model", "/model [name]"),
-    CommandSpec("/models", "list model options", "/models"),
-    CommandSpec("/search-engine", "switch web search provider", "/search-engine [name]"),
-    CommandSpec("/search-config", "set api key for a search provider", "/search-config <name> <key>"),
-    CommandSpec("/memory", "show memory summary", "/memory"),
-    CommandSpec("/skills", "show available skills", "/skills"),
-    CommandSpec("/save", "save a memory note", "/save <note>"),
-    CommandSpec("/quit", "quit the chat", "/quit"),
-]
-
-MODEL_CHOICES = [
-    "deepseek-v4-flash",
-    "deepseek-v4-pro",
-    "deepseek-reasoner",
-    "qwen3.6-plus",
-    "kimi-k2.5",
-    "glm-5",
-    "custom-openai-compatible",
-]
-
-def _aris_readline(
-    model_name: str,
-    command_specs: list[CommandSpec],
-    model_names: list[str],
-    history: list[str],
-) -> str | None:
-    """ARIS-style readline: render prompt + input + completion dropdown inline,
-    using ANSI escape codes (no floating popup).
-
-    Returns entered string, or None on exit.
-    """
-    try:
-        import msvcrt
-    except ImportError:
-        raise NotImplementedError("_aris_readline requires Windows msvcrt")
-
-
-    buf: list[str] = []
-    cursor = 0
-    sel = 0
-    history_idx: int | None = None
-    saved_buf: list[str] | None = None
-
-    # Precompute prompt length (visible width, no ANSI codes)
-    prompt_str = f"\x1b[36m\x1b[1mAuraDerma \x1b[34m[{model_name}] \x1b[33m\x1b[1m> \x1b[0m"
-    _prompt_visible_len = 15 + len(model_name)  # "AuraDerma " + "[" + name + "] " + "› "
-
-    def _display_width(s: str) -> int:
-        """计算字符串在终端中的实际显示宽度（中文占2列，英文占1列）。"""
-        width = 0
-        for ch in s:
-            if '\u4e00' <= ch <= '\u9fff' or '\u3000' <= ch <= '\u303f' \
-               or '\uff00' <= ch <= '\uffef':
-                width += 2
-            else:
-                width += 1
-        return width
-
-    def _compute_matches(line: str) -> list[tuple[str, str]]:
-        """Return list of (name, description) that match the current input."""
-        if line.startswith("/model ") and len(line) > 7:
-            partial = line[7:]
-            out = []
-            for n in model_names:
-                it = iter(n)
-                if all(c in it for c in partial):
-                    out.append((n, "model"))
-            return out
-        if not line.startswith("/"):
-            return []
-        text_lower = line.lower()
-        out = []
-        for sp in command_specs:
-            it = iter(sp.name.lower())
-            if all(c in it for c in text_lower):
-                out.append((sp.name, sp.description))
-        return out
-
-    def _render() -> None:
-        nonlocal sel
-        line = "".join(buf)
-        matches = _compute_matches(line)
-
-        # Clear from start of prompt row to end of screen, then redraw
-        sys.stdout.write("\r\x1b[J")
-
-        # ── Draw prompt + input ──
-        sys.stdout.write(prompt_str)
-        sys.stdout.write(line)
-
-        # ── Draw dropdown below ──
-        if matches:
-            max_name = max(len(m[0]) for m in matches)
-            name_col = min(max(max_name, 12), 36) + 2
-            if sel >= len(matches):
-                sel = len(matches) - 1
-
-            # Separator line
-            sys.stdout.write("\r\n")
-            sys.stdout.write(f"\x1b[2m{'─' * 60}\x1b[0m")
-            row_count = 2
-
-            for idx, (name, desc) in enumerate(matches):
-                sys.stdout.write("\r\n")
-                row_count += 1
-                if idx == sel:
-                    sys.stdout.write(f"\x1b[1;34m{name}\x1b[0m")
-                    sys.stdout.write(" " * (name_col - len(name)))
-                    sys.stdout.write(f"\x1b[1;33m{desc}\x1b[0m")
-                else:
-                    sys.stdout.write(name)
-                    sys.stdout.write(" " * (name_col - len(name)))
-                    sys.stdout.write(f"\x1b[33m{desc}\x1b[0m")
-
-            # Move cursor back to the prompt line for typing
-            sys.stdout.write(f"\x1b[{row_count - 1}A")
-
-        # Position cursor within input text (<ESC>[G is 1-indexed)
-        # Use display width instead of character index for CJK support
-        pre_cursor = "".join(buf[:cursor])
-        col = _prompt_visible_len + 1 + _display_width(pre_cursor)
-        sys.stdout.write(f"\x1b[{col}G")
-        sys.stdout.flush()
-
-    _render()
-
-    while True:
-        ch = msvcrt.getwch()
-
-        # ── Arrow / function keys (prefixed with \xe0) ──
-        if ch == "\xe0":
-            ch2 = msvcrt.getwch()
-            if ch2 == "H":  # Up
-                if matches_list := _compute_matches("".join(buf)):
-                    if sel > 0:
-                        sel -= 1
-                elif history:
-                    # History
-                    if history_idx is None:
-                        saved_buf = buf[:]
-                        history_idx = len(history) - 1
-                    elif history_idx > 0:
-                        history_idx -= 1
-                    buf = list(history[history_idx])
-                    cursor = len(buf)
-                    sel = 0
-                _render()
-            elif ch2 == "P":  # Down
-                if matches_list := _compute_matches("".join(buf)):
-                    if sel < len(_compute_matches("".join(buf))) - 1:
-                        sel += 1
-                elif history_idx is not None:
-                    if history_idx < len(history) - 1:
-                        history_idx += 1
-                        buf = list(history[history_idx])
-                    else:
-                        history_idx = None
-                        buf = saved_buf or []
-                    cursor = len(buf)
-                    sel = 0
-                _render()
-            elif ch2 == "K":  # Left
-                if cursor > 0:
-                    cursor -= 1
-                    _render()
-            elif ch2 == "M":  # Right
-                if cursor < len(buf):
-                    cursor += 1
-                    _render()
-            elif ch2 == "G":  # Home
-                cursor = 0
-                _render()
-            elif ch2 == "O":  # End
-                cursor = len(buf)
-                _render()
-            elif ch2 == "S":  # Delete
-                if cursor < len(buf):
-                    buf.pop(cursor)
-                    sel = 0
-                    _render()
-            continue
-
-        # ── Enter ──
-        if ch == "\r":
-            # Clear dropdown artifacts before committing
-            sys.stdout.write("\r\x1b[J")
-            sys.stdout.write(prompt_str + "".join(buf))
-            sys.stdout.write("\n")
-            sys.stdout.flush()
-            result = "".join(buf)
-            if result and result.strip():
-                history.append(result.strip())
-            return result
-
-        # ── Backspace ──
-        if ch in ("\b", "\x7f"):
-            if cursor > 0:
-                buf.pop(cursor - 1)
-                cursor -= 1
-                sel = 0
-                _render()
-            continue
-
-        # ── Tab: accept selected completion ──
-        if ch == "\t":
-            full = "".join(buf)
-            matches = _compute_matches(full)
-            if matches and sel < len(matches):
-                buf = list(matches[sel][0])
-                cursor = len(buf)
-                sel = 0
-                _render()
-            continue
-
-        # ── Escape: close dropdown ──
-        if ch == "\x1b":
-            sel = 0
-            _render()
-            continue
-
-        # ── Ctrl+C / Ctrl+D: exit ──
-        if ch in ("\x03", "\x04"):
-            sys.stdout.write("\r\x1b[J\n")
-            sys.stdout.flush()
-            return None
-
-        # ── Regular character ──
-        buf.insert(cursor, ch)
-        cursor += 1
-        sel = 0
-        history_idx = None
-        saved_buf = None
-        _render()
-
-
-
-
-class AppSession:
-    def __init__(self, model_override: str | None = None):
-        self.agent, self.cfg, self.current_model, self.memory_store, self.skills = _build_runtime(model_override)
-
-    def refresh_model(self, model_name: str) -> None:
-        self.agent, self.cfg, self.current_model, self.memory_store, self.skills = _build_runtime(model_name)
+# ======================================================================
+# 运行时构建
+# ======================================================================
 
 
 def _load_env() -> None:
@@ -280,49 +42,68 @@ def _load_env() -> None:
     load_dotenv(".env.local", override=True)
 
 
-def _build_runtime(model_override: str | None = None) -> tuple[SkincareAgent, AppConfig, str, MemoryStore, SkillManager]:
+def _build_runtime(
+    model_override: str | None = None,
+) -> tuple[SkincareAgent, AppConfig, str, MemoryStore, SkillManager]:
     _load_env()
-    # 确保 Web Search 配置文件存在
     ensure_search_config()
-    # Suppress Qdrant version mismatch warning (client 1.18 vs server 1.11)
     warnings.filterwarnings("ignore", message=".*incompatible with server version.*")
     cfg = load_config()
     qdrant = QdrantClient(url=cfg.qdrant_url, api_key=cfg.qdrant_api_key)
 
-    # 使用本地 embedding 模型（DeepSeek API 不支持 embedding）
     from llm import LocalEmbedder
+
     embedder = LocalEmbedder()
 
-    retriever = Retriever(qdrant, cfg.qdrant_collection_products, cfg.qdrant_collection_memory, cfg.qdrant_collection_docs)
+    retriever = Retriever(
+        qdrant,
+        cfg.qdrant_collection_products,
+        cfg.qdrant_collection_memory,
+        cfg.qdrant_collection_docs,
+    )
     retriever.ensure_collections(vector_size=embedder.dim)
-    llm = LLMClient(api_key=cfg.model_api_key, base_url=cfg.model_api_base, model=model_override or cfg.default_model)
+    llm = LLMClient(
+        api_key=cfg.model_api_key,
+        base_url=cfg.model_api_base,
+        model=model_override or cfg.default_model,
+    )
 
     web = WebSearchClient(enabled=cfg.web_search_enabled)
     policy = MemoryPolicy()
     reporter = ProgressReporter()
-    agent = SkincareAgent(llm=llm, retriever=retriever, web=web, policy=policy, _embedder=embedder, reporter=reporter)
+    agent = SkincareAgent(
+        llm=llm,
+        retriever=retriever,
+        web=web,
+        policy=policy,
+        _embedder=embedder,
+        reporter=reporter,
+    )
     store = MemoryStore(cfg.data_dir / "memory")
     skills = SkillManager(cfg.skills_dir, web)
     return agent, cfg, llm.model, store, skills
 
 
-def _apply_memory_to_bundle(bundle: MemoryBundle, item) -> None:
-    if item.scope.value == "profile":
-        bundle.profile.append(item)
-    elif item.scope.value == "short_term":
-        bundle.short_term.append(item)
-    elif item.scope.value == "long_term":
-        bundle.long_term.append(item)
-    else:
-        bundle.case_notes.append(item)
+# ======================================================================
+# AppSession
+# ======================================================================
 
 
-def _command_lines() -> list[str]:
-    return [f"{spec.name:<8} {spec.description}" for spec in COMMAND_SPECS]
+class AppSession:
+    def __init__(self, model_override: str | None = None):
+        self.agent, self.cfg, self.current_model, self.memory_store, self.skills = (
+            _build_runtime(model_override)
+        )
+
+    def refresh_model(self, model_name: str) -> None:
+        self.agent, self.cfg, self.current_model, self.memory_store, self.skills = (
+            _build_runtime(model_name)
+        )
 
 
-def _model_lines() -> list[str]:
-    return [f"{idx + 1}. {name}" for idx, name in enumerate(MODEL_CHOICES)]
+# ======================================================================
+# CLI 入口
+# ======================================================================
 
 
 @click.group()
@@ -334,24 +115,30 @@ def main() -> None:
 @click.option("--model", type=str, default=None, help="Override model name for this session")
 @click.option("--user-id", default="default-user")
 def chat(model: str | None, user_id: str) -> None:
+    """启动交互式聊天会话（跨平台支持）。"""
     session = AppSession(model)
     memory = session.memory_store.load(user_id)
     turn_log: list[str] = []
-    click.echo(_banner(session.current_model))
+    click.echo(banner(session.current_model))
     sys.stdout.flush()
 
     history: list[str] = []
+    command_names = [spec.name for spec in COMMAND_SPECS]
+    command_descriptions = [spec.description for spec in COMMAND_SPECS]
+
+    readline_fn = create_readline(
+        session.current_model,
+        command_names,
+        command_descriptions,
+        history,
+    )
 
     while True:
         try:
-            raw = _aris_readline(
-                session.current_model,
-                COMMAND_SPECS,
-                MODEL_CHOICES,
-                history,
-            )
+            raw = readline_fn()
         except NotImplementedError:
-            _legacy_chat(session, user_id, memory, turn_log)
+            log.info("当前平台不支持高级 readline，降级到简单输入模式")
+            _fallback_chat(session, user_id, memory, turn_log)
             return
 
         if raw is None:
@@ -364,236 +151,129 @@ def chat(model: str | None, user_id: str) -> None:
         if not cmd:
             continue
         if cmd.startswith("/"):
-            handled = _handle_command(cmd, session, user_id, memory)
+            handled = handle_command(cmd, session, user_id, memory)
             if handled == "quit":
                 break
-            if handled == "rerender":
-                continue
             if handled == "switched":
-                click.echo(_banner(session.current_model))
+                click.echo(banner(session.current_model))
             continue
 
-        answer = session.agent.answer(AgentContext(user_id=user_id, question=cmd, memory=memory), memory_store=session.memory_store, skill_manager=session.skills)
+        answer = session.agent.answer(
+            AgentContext(user_id=user_id, question=cmd, memory=memory),
+            memory_store=session.memory_store,
+            skill_manager=session.skills,
+        )
         click.echo("\n[assistant]\n" + answer + "\n")
         turn_log.append(f"user: {cmd}\nassistant: {answer}")
-        memory.short_term.append(session.agent.policy.classify(f"本轮对话：{cmd}", user_id=user_id))
-        session.agent.finalize_turn(user_id=user_id, dialog_text="\n\n".join(turn_log[-4:]), memory_store=session.memory_store, memory_bundle=memory)
+        memory.short_term.append(
+            session.agent.policy.classify(f"本轮对话：{cmd}", user_id=user_id)
+        )
+        session.agent.finalize_turn(
+            user_id=user_id,
+            dialog_text="\n\n".join(turn_log[-4:]),
+            memory_store=session.memory_store,
+            memory_bundle=memory,
+        )
 
 
-def _handle_command(cmd: str, session: AppSession, user_id: str, memory: MemoryBundle) -> str:
-    if cmd == "/help":
-        click.echo(_help_text())
-        return "rerender"
-    if cmd == "/models":
-        click.echo("available models:\n" + "\n".join(_model_lines()))
-        click.echo("tip: run `/model <name>` and tab-complete a choice")
-        return "rerender"
-    if cmd.startswith("/model"):
-        parts = cmd.split(maxsplit=1)
-        if len(parts) == 1:
-            click.echo(f"current model: {session.current_model}")
-            click.echo("available models:\n" + "\n".join(_model_lines()))
-            return "rerender"
-        chosen = parts[1].strip()
-        if chosen not in MODEL_CHOICES:
-            click.echo("unknown model; available options:\n" + "\n".join(_model_lines()))
-            return "rerender"
-        session.refresh_model(chosen)
-        click.echo(f"model switched to {session.current_model}")
-        return "switched"
-    if cmd == "/search-engine":
-        _show_search_engines(session)
-        return "rerender"
-    if cmd.startswith("/search-engine"):
-        parts = cmd.split(maxsplit=1)
-        if len(parts) == 1:
-            _show_search_engines(session)
-            return "rerender"
-        chosen = parts[1].strip().lower()
-        try:
-            session.agent.web.set_provider(chosen)
-            click.echo(
-                f"搜索提供方已切换为：{session.agent.web.current_provider_label}"
-            )
-        except ValueError as e:
-            click.echo(str(e))
-        return "rerender"
-    if cmd.startswith("/search-config"):
-        parts = cmd.split(maxsplit=2)
-        if len(parts) < 3:
-            click.echo("用法：/search-config <提供方名称> <API Key>")
-            click.echo("示例：/search-config tavily tvly-xxxxx")
-            click.echo("")
-            click.echo("支持的提供方：")
-            _print_supported_for_config()
-            return "rerender"
-        provider_name = parts[1].strip().lower()
-        api_key = parts[2].strip()
-        _handle_search_config(session, provider_name, api_key)
-        return "rerender"
-    if cmd == "/memory":
-        click.echo(json.dumps(memory.counts(), ensure_ascii=False, indent=2))
-        click.echo("\n" + "\n".join(session.memory_store.load_index(user_id=user_id)))
-        return "rerender"
-    if cmd == "/skills":
-        click.echo(session.skills.registry_summary())
-        return "rerender"
-    if cmd.startswith("/save"):
-        note = cmd.removeprefix("/save").strip()
-        if not note:
-            click.echo("usage: /save <note>")
-            return "rerender"
-        item = session.agent.policy.classify(note, user_id=user_id)
-        session.memory_store.append(item)
-        _apply_memory_to_bundle(memory, item)
-        click.echo(f"saved memory: {item.scope.value} -> {item.summary}")
-        return "rerender"
-    click.echo("unknown command; try /help")
-    return "rerender"
-
-
-
-def _show_search_engines(session: AppSession) -> None:
-    """显示当前搜索提供方信息和可用选项。"""
-    from web_search import SEARCH_PROVIDERS
-
-    cfg_path = Path.home() / ".auraderma" / "search_config.json"
-    click.echo(f"当前搜索提供方：{session.agent.web.current_provider_label}")
-    click.echo("")
-    click.echo("可用搜索提供方：")
-    max_key = max(len(k) for k in SEARCH_PROVIDERS) + 2
-    for key, info in SEARCH_PROVIDERS.items():
-        marker = " *" if key == session.agent.web.provider else ""
-        needs = "需 API Key" if info["needs_api_key"] else "无需 Key"
-        click.echo(f"  {key:<{max_key}} {info['label']}{marker}")
-    click.echo("")
-    click.echo("切换命令：/search-engine <名称>")
-    click.echo(f"示例：/search-engine tavily")
-    click.echo("")
-    click.echo(f"所有 API Key 统一在 {cfg_path} 中管理，")
-    click.echo("可用 /search-config <名称> <Key> 快速配置。")
-    click.echo("也可通过同名环境变量（AURADERMA_*_API_KEY）直接覆盖。")
-
-
-def _handle_search_config(session: AppSession, provider_name: str, api_key: str) -> None:
-    """处理 /search-config 命令。"""
-    from search_config import save_api_key_for_provider, PROVIDERS_NO_CONFIG, PROVIDER_TO_ENDPOINT_FIELD
-
-    # 检查是否在 searxng_endpoint 的特殊情况
-    if provider_name == "searxng":
-        from search_config import save_search_config
-        save_search_config(searxngEndpoint=api_key)
-        click.echo(f"SearXNG 端点已保存为：{api_key}")
-        return
-
-    # 检查提供方是否需要 API Key
-    if provider_name in PROVIDERS_NO_CONFIG:
-        click.echo(f"'{provider_name}' 不需要 API Key，可直接使用 /search-engine {provider_name} 切换")
-        return
-
-    err = save_api_key_for_provider(provider_name, api_key)
-    if err:
-        click.echo(err)
-        click.echo("")
-        _print_supported_for_config()
-    else:
-        click.echo(f"'{provider_name}' 的 API Key 已保存到配置文件")
-        click.echo(f"可用 /search-engine {provider_name} 切换使用")
-
-
-def _print_supported_for_config() -> None:
-    """打印可通过 /search-config 配置的提供方列表。"""
-    from search_config import (
-        PROVIDER_TO_FIELD,
-        PROVIDER_TO_ENDPOINT_FIELD,
-        PROVIDERS_NO_CONFIG,
-    )
-
-    for provider, field in PROVIDER_TO_FIELD.items():
-        click.echo(f"  {provider:<12} → 配置字段: {field}")
-    for provider, field in PROVIDER_TO_ENDPOINT_FIELD.items():
-        click.echo(f"  {provider:<12} → 配置字段: {field}（URL 地址，非 Key）")
-    click.echo("")
-    no_key_list = "、".join(sorted(PROVIDERS_NO_CONFIG))
-    click.echo(f"无需配置（不需 Key）：{no_key_list}")
-
-
-def _help_text() -> str:
-    lines = ["commands:"]
-    for spec in COMMAND_SPECS:
-        lines.append(f"  {spec.usage:<16} {spec.description}")
-    lines.append("")
-    lines.append("autocomplete: type `/` and press Tab, or type `/model ` for model suggestions")
-    lines.append("")
-    lines.append("model picker:")
-    lines.extend(f"  {line}" for line in _model_lines())
-    return "\n".join(lines)
-
-
-def _banner(model: str) -> str:
-    return (
-        "╭────────────────────────────────────────────╮\n"
-        f"│  AuraDerma  -  model: {model:<22}│\n"
-        "│  /help for commands - Tab for suggestions  │\n"
-        "╰────────────────────────────────────────────╯"
-    )
-
-
-def _legacy_chat(session: AppSession, user_id: str, memory: MemoryBundle, turn_log: list[str]) -> None:
-    click.echo("msvcrt unavailable on this platform; falling back to simple input mode.")
+def _fallback_chat(
+    session: AppSession,
+    user_id: str,
+    memory: MemoryBundle,
+    turn_log: list[str],
+) -> None:
+    """降级到简单的 input 模式（所有平台通用）。"""
+    click.echo("fallback to simple input mode.")
     while True:
-        raw = click.prompt(f"AuraDerma[{session.current_model}]", type=str)
+        try:
+            raw = click.prompt(f"AuraDerma[{session.current_model}]", type=str)
+        except (EOFError, KeyboardInterrupt):
+            break
         cmd = raw.strip()
         if cmd.lower() in {"exit", "quit", "/exit", "/quit"}:
             break
         if cmd.startswith("/"):
-            handled = _handle_command(cmd, session, user_id, memory)
+            handled = handle_command(cmd, session, user_id, memory)
             if handled == "quit":
                 break
             continue
-        answer = session.agent.answer(AgentContext(user_id=user_id, question=cmd, memory=memory), memory_store=session.memory_store, skill_manager=session.skills)
+        answer = session.agent.answer(
+            AgentContext(user_id=user_id, question=cmd, memory=memory),
+            memory_store=session.memory_store,
+            skill_manager=session.skills,
+        )
         click.echo("\nassistant:\n" + answer + "\n")
         turn_log.append(f"user: {cmd}\nassistant: {answer}")
-        memory.short_term.append(session.agent.policy.classify(f"本轮对话：{cmd}", user_id=user_id))
-        session.agent.finalize_turn(user_id=user_id, dialog_text="\n\n".join(turn_log[-4:]), memory_store=session.memory_store, memory_bundle=memory)
+        memory.short_term.append(
+            session.agent.policy.classify(f"本轮对话：{cmd}", user_id=user_id)
+        )
+        session.agent.finalize_turn(
+            user_id=user_id,
+            dialog_text="\n\n".join(turn_log[-4:]),
+            memory_store=session.memory_store,
+            memory_bundle=memory,
+        )
 
 
 @main.command()
 def init() -> None:
+    """显示初始配置信息。"""
     _load_env()
     cfg = load_config()
-    click.echo(json.dumps({
-        "model_base": cfg.model_api_base,
-        "default_model": cfg.default_model,
-        "qdrant_url": cfg.qdrant_url,
-        "skills_dir": str(cfg.skills_dir),
-        "collections": [cfg.qdrant_collection_products, cfg.qdrant_collection_memory, cfg.qdrant_collection_docs],
-        "models": MODEL_CHOICES,
-    }, ensure_ascii=False, indent=2))
+    click.echo(
+        json.dumps(
+            {
+                "model_base": cfg.model_api_base,
+                "default_model": cfg.default_model,
+                "qdrant_url": cfg.qdrant_url,
+                "skills_dir": str(cfg.skills_dir),
+                "collections": [
+                    cfg.qdrant_collection_products,
+                    cfg.qdrant_collection_memory,
+                    cfg.qdrant_collection_docs,
+                ],
+                "models": MODEL_CHOICES,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
 
 
 @main.command()
 @click.argument("path", type=click.Path(path_type=Path, exists=True))
 def ingest(path: Path) -> None:
+    """导入文档（PDF/DOCX/TXT）。"""
     from ingest import ingest_document
 
     result = ingest_document(path)
-    click.echo(json.dumps({
-        "doc_id": result.doc_id,
-        "path": str(result.path),
-        "type": result.doc_type.value,
-        "chunks": len(result.chunks),
-    }, ensure_ascii=False, indent=2))
+    click.echo(
+        json.dumps(
+            {
+                "doc_id": result.doc_id,
+                "path": str(result.path),
+                "type": result.doc_type.value,
+                "chunks": len(result.chunks),
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
 
 
 @main.command()
 @click.argument("path", type=click.Path(path_type=Path, exists=True))
 def ingest_products(path: Path) -> None:
-    """解析护肤品原始文本文件，结构化后 embedding 存入 Qdrant"""
+    """解析护肤品原始文本文件，结构化后 embedding 存入 Qdrant。"""
     _load_env()
     cfg = load_config()
     qdrant = QdrantClient(url=cfg.qdrant_url, api_key=cfg.qdrant_api_key)
-    retriever = Retriever(qdrant, cfg.qdrant_collection_products, cfg.qdrant_collection_memory, cfg.qdrant_collection_docs)
+    retriever = Retriever(
+        qdrant,
+        cfg.qdrant_collection_products,
+        cfg.qdrant_collection_memory,
+        cfg.qdrant_collection_docs,
+    )
     retriever.ensure_collections()
 
     from ingest_products import ingest_products_to_qdrant
@@ -601,12 +281,27 @@ def ingest_products(path: Path) -> None:
 
     embedder = LocalEmbedder()
     records = ingest_products_to_qdrant(path, embedder, retriever)
-    click.echo(json.dumps({
-        "status": "ok",
-        "file": str(path),
-        "products_ingested": len(records),
-        "products": [
-            {"id": r.product_id, "name": r.name, "brand": r.brand, "concerns": r.concerns}
-            for r in records
-        ],
-    }, ensure_ascii=False, indent=2))
+    click.echo(
+        json.dumps(
+            {
+                "status": "ok",
+                "file": str(path),
+                "products_ingested": len(records),
+                "products": [
+                    {
+                        "id": r.product_id,
+                        "name": r.name,
+                        "brand": r.brand,
+                        "concerns": r.concerns,
+                    }
+                    for r in records
+                ],
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
+
+
+if __name__ == "__main__":
+    main()
