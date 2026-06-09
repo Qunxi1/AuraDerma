@@ -15,7 +15,7 @@ _PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-from agent import AgentContext, SkincareAgent
+from agent_react import ReActAgent
 from console.commands import (
     COMMAND_SPECS,
     MODEL_CHOICES,
@@ -27,7 +27,7 @@ from console.commands import (
 from console.readline import create_readline
 from config import AppConfig, load_config
 from core import get_logger
-from llm import LLMClient
+from llm import LLMClient, LocalEmbedder
 from memory import MemoryBundle, MemoryPolicy, MemoryStore
 from reporter import ProgressReporter
 from retrieval import Retriever
@@ -42,6 +42,20 @@ log = get_logger("auraderma.cli")
 # ======================================================================
 
 
+@dataclass(slots=True)
+class Runtime:
+    """一次构建产出的所有运行时组件。"""
+    react_agent: ReActAgent
+    cfg: AppConfig
+    model: str
+    store: MemoryStore
+    skills: SkillManager
+    embedder: LocalEmbedder
+    retriever: Retriever
+    web: WebSearchClient
+    policy: MemoryPolicy
+
+
 def _load_env() -> None:
     load_dotenv()
     load_dotenv(".env.local", override=True)
@@ -49,14 +63,12 @@ def _load_env() -> None:
 
 def _build_runtime(
     model_override: str | None = None,
-) -> tuple[SkincareAgent, AppConfig, str, MemoryStore, SkillManager]:
+) -> Runtime:
     _load_env()
     ensure_search_config()
     warnings.filterwarnings("ignore", message=".*incompatible with server version.*")
     cfg = load_config()
     qdrant = QdrantClient(url=cfg.qdrant_url, api_key=cfg.qdrant_api_key)
-
-    from llm import LocalEmbedder
 
     embedder = LocalEmbedder()
 
@@ -74,19 +86,29 @@ def _build_runtime(
     )
 
     web = WebSearchClient(enabled=cfg.web_search_enabled)
-    policy = MemoryPolicy()
     reporter = ProgressReporter()
-    agent = SkincareAgent(
+
+    react_agent = ReActAgent(
         llm=llm,
         retriever=retriever,
+        embedder=embedder,
         web=web,
-        policy=policy,
-        _embedder=embedder,
         reporter=reporter,
     )
     store = MemoryStore(cfg.data_dir / "memory")
+    policy = MemoryPolicy()
     skills = SkillManager(cfg.skills_dir, web)
-    return agent, cfg, llm.model, store, skills
+    return Runtime(
+        react_agent=react_agent,
+        cfg=cfg,
+        model=llm.model,
+        store=store,
+        skills=skills,
+        embedder=embedder,
+        retriever=retriever,
+        web=web,
+        policy=policy,
+    )
 
 
 # ======================================================================
@@ -96,14 +118,28 @@ def _build_runtime(
 
 class AppSession:
     def __init__(self, model_override: str | None = None):
-        self.agent, self.cfg, self.current_model, self.memory_store, self.skills = (
-            _build_runtime(model_override)
-        )
+        rt = _build_runtime(model_override)
+        self.react_agent = rt.react_agent
+        self.cfg = rt.cfg
+        self.current_model = rt.model
+        self.memory_store = rt.store
+        self.skills = rt.skills
+        self.embedder = rt.embedder
+        self.retriever = rt.retriever
+        self.web = rt.web
+        self.policy = rt.policy
 
     def refresh_model(self, model_name: str) -> None:
-        self.agent, self.cfg, self.current_model, self.memory_store, self.skills = (
-            _build_runtime(model_name)
-        )
+        rt = _build_runtime(model_name)
+        self.react_agent = rt.react_agent
+        self.cfg = rt.cfg
+        self.current_model = rt.model
+        self.memory_store = rt.store
+        self.skills = rt.skills
+        self.embedder = rt.embedder
+        self.retriever = rt.retriever
+        self.web = rt.web
+        self.policy = rt.policy
 
 
 # ======================================================================
@@ -113,14 +149,14 @@ class AppSession:
 
 @click.group()
 def main() -> None:
-    """AuraDerma CLI."""
+    """AuraDerma CLI (ReAct Agent)."""
 
 
 @main.command()
 @click.option("--model", type=str, default=None, help="Override model name for this session")
 @click.option("--user-id", default="default-user")
 def chat(model: str | None, user_id: str) -> None:
-    """启动交互式聊天会话（跨平台支持）。"""
+    """启动交互式聊天会话（基于 ReAct Agent 的思考-行动-观察循环）。"""
     session = AppSession(model)
     memory = session.memory_store.load(user_id)
     turn_log: list[str] = []
@@ -163,22 +199,41 @@ def chat(model: str | None, user_id: str) -> None:
                 click.echo(banner(session.current_model))
             continue
 
-        answer = session.agent.answer(
-            AgentContext(user_id=user_id, question=cmd, memory=memory),
-            memory_store=session.memory_store,
-            skill_manager=session.skills,
-        )
+        # ── ReAct 思考→行动→观察循环 ──
+        answer = _do_chat(cmd, user_id, session, memory, turn_log)
         click.echo("\n[assistant]\n" + answer + "\n")
         turn_log.append(f"user: {cmd}\nassistant: {answer}")
-        memory.short_term.append(
-            session.agent.policy.classify(f"本轮对话：{cmd}", user_id=user_id)
-        )
-        session.agent.finalize_turn(
-            user_id=user_id,
-            dialog_text="\n\n".join(turn_log[-4:]),
-            memory_store=session.memory_store,
-            memory_bundle=memory,
-        )
+
+
+def _do_chat(
+    cmd: str,
+    user_id: str,
+    session: AppSession,
+    memory: MemoryBundle,
+    turn_log: list[str],
+) -> str:
+    """执行一次 ReAct 对话（思考→行动→观察循环）。"""
+    result = session.react_agent.run(
+        question=cmd,
+        user_id=user_id,
+        memory_store=session.memory_store,
+    )
+    # 打印工具调用步骤
+    if result.steps:
+        click.echo(f"\n[ReAct: {result.total_tool_calls} 步]")
+        for s in result.steps:
+            click.echo(f"  #{s['step']} {s['tool']}({s['args']}) → {s['result_preview'][:60]}...")
+
+    # 重新加载记忆（ReActAgent 已在内部写入新记忆）
+    fresh = session.memory_store.load(user_id)
+    memory.profile = fresh.profile
+    memory.short_term = fresh.short_term
+    memory.long_term = fresh.long_term
+    memory.case_notes = fresh.case_notes
+    memory.short_term.append(
+        session.policy.classify(f"本轮对话：{cmd}", user_id=user_id)
+    )
+    return result.answer
 
 
 def _fallback_chat(
@@ -189,6 +244,7 @@ def _fallback_chat(
 ) -> None:
     """降级到简单的 input 模式（所有平台通用）。"""
     click.echo("fallback to simple input mode.")
+
     while True:
         try:
             raw = click.prompt(f"AuraDerma[{session.current_model}]", type=str)
@@ -202,22 +258,10 @@ def _fallback_chat(
             if handled == "quit":
                 break
             continue
-        answer = session.agent.answer(
-            AgentContext(user_id=user_id, question=cmd, memory=memory),
-            memory_store=session.memory_store,
-            skill_manager=session.skills,
-        )
+
+        answer = _do_chat(cmd, user_id, session, memory, turn_log)
         click.echo("\nassistant:\n" + answer + "\n")
         turn_log.append(f"user: {cmd}\nassistant: {answer}")
-        memory.short_term.append(
-            session.agent.policy.classify(f"本轮对话：{cmd}", user_id=user_id)
-        )
-        session.agent.finalize_turn(
-            user_id=user_id,
-            dialog_text="\n\n".join(turn_log[-4:]),
-            memory_store=session.memory_store,
-            memory_bundle=memory,
-        )
 
 
 @main.command()
@@ -282,7 +326,6 @@ def ingest_products(path: Path) -> None:
     retriever.ensure_collections()
 
     from ingest_products import ingest_products_to_qdrant
-    from llm import LocalEmbedder
 
     embedder = LocalEmbedder()
     records = ingest_products_to_qdrant(path, embedder, retriever)

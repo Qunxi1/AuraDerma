@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 import json
 
-from schema import MemoryItem, MemoryScope, new_id
+from schema import ConversationHistory, MemoryItem, MemoryScope, Turn, new_id
 
 
 @dataclass(slots=True)
@@ -46,13 +46,35 @@ class MemoryPolicy:
     short_term_turns = 12
     long_term_default_ttl_days = 365
 
+    # ---------- 肤质自然语言模式库 ----------
+    # 用于 classify() 的自然语言匹配
+    _SKIN_TYPE_PATTERNS: list[str] = [
+        # 明确肤质
+        "油皮", "干皮", "混油", "混干", "中性皮", "敏感皮", "痘肌",
+        "油性", "干性", "混合性", "中性", "敏感性",
+        # 自然表达：T区
+        "t区油", "t区出油", "t区偏油", "t区很油", "t区爱出油",
+        "t区干", "t区偏干", "t区很干",
+        # 自然表达：脸颊/两颊
+        "脸颊干", "脸颊偏干", "脸颊很干", "两颊干", "两颊偏干",
+        "脸颊油", "脸颊偏油", "两颊油", "两颊出油",
+        # 自然表达：综合
+        "外油内干", "内油外干", "又油又干",
+        "额头油", "下巴油", "鼻子油",
+        # 敏感/过敏
+        "容易过敏", "容易泛红", "容易敏感", "皮肤薄", "屏障受损",
+        "泛红", "红血丝", "刺痛", "发痒", "起皮", "脱皮",
+        # 痘痘相关
+        "爱长痘", "容易长痘", "反复长痘", "闭口", "粉刺", "痘痘",
+    ]
+
     def classify(self, text: str, user_id: str, source_doc_id: str | None = None) -> MemoryItem:
-        normalized = text.strip()
+        normalized = text.strip().lower()
         scope = MemoryScope.LONG_TERM
         ttl_days: int | None = self.long_term_default_ttl_days
         tags: list[str] = []
 
-        if any(key in normalized for key in ["肤质", "过敏", "敏感", "油皮", "干皮", "混油", "痘肌"]):
+        if any(pattern in normalized for pattern in self._SKIN_TYPE_PATTERNS):
             scope = MemoryScope.PROFILE
             ttl_days = None
             tags.append("profile")
@@ -175,6 +197,59 @@ class MemoryStore:
                 break
         return snippets
 
+    # ------------------------------------------------------------------
+    # 对话历史持久化（类似 Reasonix 的 Append-Only Log 持久层）
+    # ------------------------------------------------------------------
+
+    def _conversations_dir(self, user_id: str) -> Path:
+        """对话历史存储目录。"""
+        d = self.root / "conversations" / user_id
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    def save_conversation_history(self, user_id: str, history: ConversationHistory) -> None:
+        """持久化对话历史到 JSON 文件。"""
+        if not history.turns:
+            return
+        data = {
+            "compacted_up_to": history._compacted_up_to,
+            "compaction_summary": history._compaction_summary,
+            "turns": [
+                {
+                    "turn_index": t.turn_index,
+                    "user_question": t.user_question,
+                    "assistant_answer": t.assistant_answer,
+                    "timestamp": t.timestamp,
+                    "memory_ids": t.memory_ids,
+                }
+                for t in history.turns
+            ],
+        }
+        path = self._conversations_dir(user_id) / "history.json"
+        path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def load_conversation_history(self, user_id: str) -> ConversationHistory:
+        """从持久化文件加载对话历史。"""
+        path = self._conversations_dir(user_id) / "history.json"
+        if not path.exists():
+            return ConversationHistory()
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            history = ConversationHistory()
+            history._compacted_up_to = data.get("compacted_up_to", 0)
+            history._compaction_summary = data.get("compaction_summary", "")
+            for t_data in data.get("turns", []):
+                history.turns.append(Turn(
+                    turn_index=t_data["turn_index"],
+                    user_question=t_data["user_question"],
+                    assistant_answer=t_data["assistant_answer"],
+                    timestamp=t_data.get("timestamp", ""),
+                    memory_ids=t_data.get("memory_ids", []),
+                ))
+            return history
+        except (json.JSONDecodeError, KeyError):
+            return ConversationHistory()
+
     def rebuild_indexes(self) -> None:
         for mem_file in self.memories_dir.rglob("*.json"):
             data = json.loads(mem_file.read_text(encoding="utf-8"))
@@ -241,6 +316,181 @@ class MemoryStore:
         if item.ttl_days is None:
             return None
         return (datetime.utcnow() + timedelta(days=item.ttl_days)).isoformat(timespec="seconds") + "Z"
+
+
+# ======================================================================
+# 结构化肤质画像 —— 将零散的 profile 聚合为结构化摘要
+# ======================================================================
+
+
+@dataclass(slots=True)
+class SkinProfile:
+    skin_type: str | None = None          # 油皮/干皮/混油/混干/中性/敏感
+    t_zone: str | None = None             # T区：油/干/正常
+    cheeks: str | None = None             # 脸颊：油/干/正常
+    sensitivity: str | None = None        # 敏感程度：敏感/一般/耐受
+    acne_prone: bool | None = None        # 是否易长痘
+    concerns: list[str] = field(default_factory=list)  # 护肤诉求列表
+    allergies: list[str] = field(default_factory=list)  # 过敏/避开的成分
+    climate: str | None = None            # 所在地气候
+    raw_memories: list[str] = field(default_factory=list)  # 原始记忆文本
+
+    def is_empty(self) -> bool:
+        return not any([
+            self.skin_type, self.t_zone, self.cheeks,
+            self.sensitivity, self.acne_prone,
+            self.concerns, self.allergies, self.climate,
+        ])
+
+    def to_formatted_block(self) -> str:
+        """生成 LLM-friendly 的结构化肤质画像文本块。"""
+        if self.is_empty():
+            return ""
+        lines = ["【用户肤质画像】"]
+        if self.skin_type:
+            lines.append(f"  肤质类型: {self.skin_type}")
+        if self.t_zone:
+            lines.append(f"  T区: {self.t_zone}")
+        if self.cheeks:
+            lines.append(f"  脸颊: {self.cheeks}")
+        if self.sensitivity:
+            lines.append(f"  敏感程度: {self.sensitivity}")
+        if self.acne_prone is not None:
+            lines.append(f"  是否易长痘: {'是' if self.acne_prone else '否'}")
+        if self.concerns:
+            lines.append(f"  护肤诉求: {'、'.join(self.concerns)}")
+        if self.allergies:
+            lines.append(f"  需避开: {'、'.join(self.allergies)}")
+        if self.climate:
+            lines.append(f"  所在气候: {self.climate}")
+        return "\n".join(lines)
+
+
+def aggregate_skin_profile(memories: list[MemoryItem]) -> SkinProfile:
+    """从 profile 记忆列表中聚合出结构化的肤质画像。
+
+    将多条 profile 记忆（如"t区油""脸颊干""容易过敏"）合并推演为完整画像。
+    """
+    profile = SkinProfile()
+    texts = [m.text.lower() for m in memories]
+    profile.raw_memories = texts[:]
+
+    # ── T区状态 ──
+    t_oily = any("t区油" in t or "t区出油" in t or "t区偏油" in t or "t区爱出油" in t for t in texts)
+    t_dry = any("t区干" in t or "t区偏干" in t for t in texts)
+    if t_oily and t_dry:
+        profile.t_zone = "混合（又油又干）"
+    elif t_oily:
+        profile.t_zone = "偏油"
+    elif t_dry:
+        profile.t_zone = "偏干"
+    elif any("t区" in t for t in texts):
+        profile.t_zone = "正常"
+
+    # ── 脸颊状态 ──
+    cheek_oily = any("脸颊油" in t or "脸颊偏油" in t or "两颊油" in t or "两颊出油" in t for t in texts)
+    cheek_dry = any("脸颊干" in t or "脸颊偏干" in t or "两颊干" in t or "两颊偏干" in t for t in texts)
+    if cheek_oily and cheek_dry:
+        profile.cheeks = "混合（又油又干）"
+    elif cheek_oily:
+        profile.cheeks = "偏油"
+    elif cheek_dry:
+        profile.cheeks = "偏干"
+    elif any("脸颊" in t or "两颊" in t for t in texts):
+        profile.cheeks = "正常"
+
+    # ── 综合推断肤质类型 ──
+    explicit_type = _match_explicit_skin_type(texts)
+    if explicit_type:
+        profile.skin_type = explicit_type
+    elif profile.t_zone == "偏油" and profile.cheeks == "偏干":
+        profile.skin_type = "混油"
+    elif profile.t_zone == "偏干" and profile.cheeks == "偏油":
+        profile.skin_type = "混干"
+    elif profile.t_zone == "偏油" and profile.cheeks in (None, "正常"):
+        profile.skin_type = "油性"
+    elif profile.cheeks == "偏干" and profile.t_zone in (None, "正常"):
+        profile.skin_type = "干性"
+    elif any("外油内干" in t or "内油外干" in t for t in texts):
+        profile.skin_type = "外油内干"
+    elif profile.t_zone == "正常" and profile.cheeks == "正常":
+        profile.skin_type = "中性"
+
+    # ── 敏感程度 ──
+    sensitivity_keywords = ["敏感", "过敏", "容易泛红", "红血丝", "刺痛", "发痒", "屏障受损", "皮肤薄"]
+    if any(any(kw in t for kw in sensitivity_keywords) for t in texts):
+        profile.sensitivity = "敏感"
+    else:
+        profile.sensitivity = "一般"
+
+    # ── 痘痘 ──
+    acne_keywords = ["痘", "闭口", "粉刺", "爱长痘", "容易长痘", "反复长痘"]
+    if any(any(kw in t for kw in acne_keywords) for t in texts):
+        profile.acne_prone = True
+    elif any("不长痘" in t or "无痘" in t for t in texts):
+        profile.acne_prone = False
+
+    # ── 护肤诉求 ──
+    concern_map = {
+        "美白": ["美白", "变白", "提亮", "暗沉", "色斑", "痘印"],
+        "祛痘": ["祛痘", "痘痘", "闭口", "粉刺", "痘印"],
+        "抗老": ["抗老", "抗衰", "皱纹", "细纹", "松弛", "紧致"],
+        "保湿": ["保湿", "补水", "干燥", "起皮", "脱皮", "干"],
+        "修护": ["修护", "修复", "屏障", "泛红", "红血丝", "敏感"],
+        "控油": ["控油", "出油", "油光", "油"],
+        "舒缓": ["舒缓", "镇静", "退红", "抗炎", "消炎"],
+    }
+    seen: set[str] = set()
+    for concern, keywords in concern_map.items():
+        if any(any(kw in t for kw in keywords) for t in texts):
+            if concern not in seen:
+                profile.concerns.append(concern)
+                seen.add(concern)
+
+    # ── 过敏/避开成分 ──
+    allergy_keywords = ["过敏", "不耐受", "避开", "不能用", "不能用含"]
+    for t in texts:
+        if any(kw in t for kw in allergy_keywords):
+            for part in t.replace("，", ",").replace("、", ",").split(","):
+                part = part.strip()
+                if part and ("过敏" not in part) and len(part) > 1:
+                    profile.allergies.append(part)
+
+    # ── 气候 ──
+    climate_map = {
+        "南方": ["南方", "华南", "广州", "深圳", "珠海", "海南", "福州", "厦门"],
+        "北方": ["北方", "华北", "北京", "天津", "石家庄", "济南", "青岛", "大连"],
+        "干燥": ["干燥", "干", "北方", "西北"],
+        "潮湿": ["潮湿", "湿", "回南天", "南方", "华南"],
+    }
+    for label, keywords in climate_map.items():
+        if any(k in t for k in keywords for t in texts):
+            profile.climate = label
+            break
+
+    return profile
+
+
+def _match_explicit_skin_type(texts: list[str]) -> str | None:
+    """匹配明确声明的肤质类型（如"我是油皮""我是混油"）。"""
+    for t in texts:
+        if "油皮" in t or "油性" in t:
+            if "混" in t or "混合" in t:
+                return "混油"
+            if "干" not in t:
+                return "油皮"
+        if "干皮" in t or "干性" in t:
+            if "混" in t or "混合" in t:
+                return "混干"
+            if "油" not in t:
+                return "干皮"
+        if "中性皮" in t or "中性" in t:
+            return "中性"
+        if "敏感皮" in t or "敏感性" in t or "敏感肌" in t:
+            return "敏感"
+        if "痘肌" in t:
+            return "油痘肌"
+    return None
 
 
 def _tokenize(text: str) -> list[str]:

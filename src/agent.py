@@ -19,7 +19,9 @@ from prompts import (
     INTENT_CLASSIFIER_PROMPT,
     REGIMEN_PLANNER_PROMPT,
     ANSWER_PROMPT,
+    CONVERSATION_COMPACT_PROMPT,
 )
+from schema import ConversationHistory, Turn
 from reporter import NullReporter, ProgressReporter
 from retrieval import Retriever
 from skill_manager import SkillManager
@@ -97,6 +99,7 @@ class AgentContext:
     user_id: str
     question: str
     memory: MemoryBundle
+    history: ConversationHistory | None = None
 
 
 @dataclass(slots=True)
@@ -166,6 +169,7 @@ class RetrievalResult:
     skill_names: list[str]
     memory_file_snippets: list[str]
     skill_body: str
+    history_block: str = ""           # 对话历史文本块（注入到 LLM context）
     weather_info: str = ""
     intent: str = "single"
     regimen_goal: str = ""
@@ -301,9 +305,12 @@ class SkincareAgent:
         self.reporter.workflow()
         workflow = self._workflow.plan(ctx.question, intent)
 
+        # ── 对话历史注入（类似 Reasonix 的 Compose）──
+        history_block = ctx.history.history_block(max_verbose_turns=3) if ctx.history else ""
+
         # ── 通用聊天模式 ──
         if "general_chat" in workflow.processes:
-            return self._handle_general_chat(ctx, workflow, skill_manager)
+            return self._handle_general_chat(ctx, workflow, skill_manager, history_block=history_block)
 
         # ── 护肤相关流程 ──
         question_embedding = self._retrieval.embed_query(ctx.question)
@@ -358,6 +365,7 @@ class SkincareAgent:
             skill_names=skill_names,
             memory_file_snippets=[],
             skill_body=skill_body,
+            history_block=history_block,
             weather_info=weather_info,
             intent=intent.intent,
             regimen_goal=intent.goal,
@@ -387,6 +395,7 @@ class SkincareAgent:
         ctx: AgentContext,
         workflow,
         skill_manager,
+        history_block: str = "",
     ) -> RetrievalResult:
         """处理纯聊天请求。"""
         weather_info = ""
@@ -423,6 +432,7 @@ class SkincareAgent:
             skill_names=["web_search" if need_web else ""],
             memory_file_snippets=[],
             skill_body="",
+            history_block=history_block,
             weather_info=weather_info,
             intent="general",
             regimen_goal="",
@@ -574,14 +584,86 @@ class SkincareAgent:
             return []
 
     # ------------------------------------------------------------------
+    # 对话历史压缩（类似 Reasonix 的 compact / Compaction）
+    # ------------------------------------------------------------------
+
+    def compress_conversation(
+        self,
+        history: ConversationHistory,
+        keep_recent: int = 10,
+    ) -> ConversationHistory:
+        """对早期对话轮次做 LLM 结构化摘要压缩。
+
+        策略（参考 Reasonix compact.go）：
+        - 保留最近 keep_recent 轮完整内容
+        - 对之前的轮次用 LLM 生成结构化摘要
+        - 摘要格式：目标、已知信息、已给建议、用户反馈、待办事项
+        - 压缩后的摘要注入到后续每轮的 context_block 开头
+
+        Args:
+            history: 当前对话历史
+            keep_recent: 保留的最近完整轮次数
+
+        Returns:
+            history 本身（已修改），或原对象（无需压缩时）
+        """
+        region = history.compactable_region(keep_recent=keep_recent)
+        if region is None:
+            return history
+
+        # 构造压缩 prompt
+        transcript_lines = []
+        for t in region:
+            transcript_lines.append(f"[用户] {t.user_question}")
+            transcript_lines.append(f"[助手] {t.assistant_answer}")
+            transcript_lines.append("")
+        transcript = "\n".join(transcript_lines)
+
+        system_prompt = CONVERSATION_COMPACT_PROMPT
+        user_prompt = (
+            "以下是需要压缩的早期对话记录。请按格式生成结构化摘要：\n\n"
+            f"{transcript}"
+        )
+
+        self.reporter.thinking("压缩对话历史")
+        summary = self.llm.chat(system_prompt, user_prompt, temperature=0.1)
+        summary = summary.strip()
+        if not summary:
+            log.warning("对话压缩返回空结果，跳过压缩")
+            return history
+
+        last_compacted_idx = region[-1].turn_index
+        history.mark_compacted(summary, last_compacted_idx)
+
+        # 只保留最近 keep_recent 轮
+        history.turns = history.recent_turns(keep_recent)
+
+        log.info(
+            "对话历史已压缩: compacted_up_to=%d, 保留 %d 轮",
+            last_compacted_idx, len(history.turns),
+        )
+        return history
+
+    # ------------------------------------------------------------------
     # 记忆提取和持久化
     # ------------------------------------------------------------------
 
     def auto_memory_extract(self, user_id: str, dialog_text: str) -> list:
         """自动从对话中提取记忆。"""
         prompt = (
-            "请从以下对话中抽取可长期保存的护肤记忆，返回 JSON 数组。"
-            "每项包含 text, scope(profile|long_term), confidence(0~1之间的数字，如0.8), tags。"
+            "你是一个护肤记忆提取器。请从以下对话中提取所有有价值的用户护肤信息。\n\n"
+            "提取规则：\n"
+            "1. 将每条独立信息存为单独的 memory item（如「T区油」和「脸颊干」应拆为两条）。\n"
+            "2. scope 为 profile 的情况：肤质、过敏、皮肤问题/症状、产品使用习惯、所在地/气候。\n"
+            "3. scope 为 long_term 的情况：护肤偏好、曾经用过的产品、一般性护肤知识交流。\n"
+            "4. 保留用户的原话风格，不要改写。\n"
+            "5. confidence 表示你对提取结果的把握度（0~1，如0.8）。\n\n"
+            "特别提示：注意识别自然口语中的肤质表达，例如：\n"
+            "  - 「我 T 区油」 → text: T区油, scope: profile\n"
+            "  - 「脸颊干」 → text: 脸颊干, scope: profile\n"
+            "  - 「容易过敏」 → text: 容易过敏, scope: profile\n"
+            "  - 「外油内干」 → text: 外油内干, scope: profile\n\n"
+            "返回 JSON 数组，每项格式: {\"text\":\"...\", \"scope\":\"profile|long_term\", \"confidence\":0.8, \"tags\":[\"肤质\",\"...\"]}\n"
             "只返回 JSON，不要解释。\n\n"
             f"对话内容：\n{dialog_text}"
         )

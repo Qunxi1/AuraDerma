@@ -25,6 +25,7 @@ COMMAND_SPECS: list[CommandSpec] = [
     CommandSpec("/search-engine", "switch web search provider", "/search-engine [name]"),
     CommandSpec("/search-config", "set api key for a search provider", "/search-config <name> <key>"),
     CommandSpec("/memory", "show memory summary", "/memory"),
+    CommandSpec("/profile", "show aggregated skin profile", "/profile"),
     CommandSpec("/skills", "show available skills", "/skills"),
     CommandSpec("/save", "save a memory note", "/save <note>"),
     CommandSpec("/quit", "quit the chat", "/quit"),
@@ -39,6 +40,15 @@ MODEL_CHOICES = [
     "glm-5",
     "custom-openai-compatible",
 ]
+
+
+def banner(model: str) -> str:
+    return (
+        "╭────────────────────────────────────────────╮\n"
+        f"│  AuraDerma  -  model: {model:<22}│\n"
+        "│  /help for commands - Tab for suggestions  │\n"
+        "╰────────────────────────────────────────────╯"
+    )
 
 
 def handle_command(cmd: str, session, user_id: str, memory) -> str:
@@ -73,8 +83,8 @@ def handle_command(cmd: str, session, user_id: str, memory) -> str:
             return "rerender"
         chosen = parts[1].strip().lower()
         try:
-            session.agent.web.set_provider(chosen)
-            click.echo(f"搜索提供方已切换为：{session.agent.web.current_provider_label}")
+            session.web.set_provider(chosen)
+            click.echo(f"搜索提供方已切换为：{session.web.current_provider_label}")
         except ValueError as e:
             click.echo(str(e))
         return "rerender"
@@ -84,6 +94,24 @@ def handle_command(cmd: str, session, user_id: str, memory) -> str:
         click.echo(json.dumps(memory.counts(), ensure_ascii=False, indent=2))
         click.echo("\n" + "\n".join(session.memory_store.load_index(user_id=user_id)))
         return "rerender"
+    if cmd == "/profile":
+        from memory import aggregate_skin_profile
+
+        profile = aggregate_skin_profile(memory.profile)
+        if profile.is_empty():
+            click.echo("尚无肤质信息。可以在聊天中告诉我你的肤质情况，例如：\n"
+                       "  \"我 T 区油\"\n"
+                       "  \"脸颊干\"\n"
+                       "  \"容易过敏\"\n"
+                       "  \"我是混油皮\"")
+        else:
+            profile_text = profile.to_formatted_block()
+            click.echo(profile_text)
+            if profile.raw_memories:
+                click.echo(f"\n原始记忆 ({len(profile.raw_memories)} 条):")
+                for t in profile.raw_memories:
+                    click.echo(f"  · {t[:80]}")
+        return "rerender"
     if cmd == "/skills":
         click.echo(session.skills.registry_summary())
         return "rerender"
@@ -92,7 +120,7 @@ def handle_command(cmd: str, session, user_id: str, memory) -> str:
         if not note:
             click.echo("usage: /save <note>")
             return "rerender"
-        item = session.agent.policy.classify(note, user_id=user_id)
+        item = session.policy.classify(note, user_id=user_id)
         session.memory_store.append(item)
         _apply_memory_to_bundle(memory, item)
         click.echo(f"saved memory: {item.scope.value} -> {item.summary}")
@@ -111,15 +139,6 @@ def help_text() -> str:
     lines.append("model picker:")
     lines.extend(f"  {line}" for line in model_lines())
     return "\n".join(lines)
-
-
-def banner(model: str) -> str:
-    return (
-        "╭────────────────────────────────────────────╮\n"
-        f"│  AuraDerma  -  model: {model:<22}│\n"
-        "│  /help for commands - Tab for suggestions  │\n"
-        "╰────────────────────────────────────────────╯"
-    )
 
 
 def model_lines() -> list[str]:
@@ -141,12 +160,12 @@ def _show_search_engines(session) -> None:
     from skills.web_search.client import SEARCH_PROVIDERS
 
     cfg_path = Path.home() / ".auraderma" / "search_config.json"
-    click.echo(f"当前搜索提供方：{session.agent.web.current_provider_label}")
+    click.echo(f"当前搜索提供方：{session.web.current_provider_label}")
     click.echo("")
     click.echo("可用搜索提供方：")
     max_key = max(len(k) for k in SEARCH_PROVIDERS) + 2
     for key, info in SEARCH_PROVIDERS.items():
-        marker = " *" if key == session.agent.web.provider else ""
+        marker = " *" if key == session.web.provider else ""
         needs = "需 API Key" if info["needs_api_key"] else "无需 Key"
         click.echo(f"  {key:<{max_key}} {info['label']}{marker}")
     click.echo("")
