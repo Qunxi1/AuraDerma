@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from textwrap import dedent
 
-from agent import IntentResult, WorkflowPlan
+from schema import IntentResult, WorkflowPlan
 from core import JsonParser, get_logger
 from prompts import SYSTEM_PROMPT, WORKFLOW_PLANNER_PROMPT
 

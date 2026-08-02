@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from textwrap import dedent
 
-from agent import RegimenPlan, RegimenStep
+from schema import RegimenPlan, RegimenStep
 from core import JsonParser, get_logger
 from prompts import REGIMEN_PLANNER_PROMPT, SYSTEM_PROMPT
 

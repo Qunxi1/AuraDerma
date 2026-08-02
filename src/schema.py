@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
+import json
 import uuid
 
 
@@ -188,28 +189,105 @@ class Turn:
         return summary
 
 
+# ======================================================================
+# Agent data classes (moved from agent.py after Pipeline removal)
+# ======================================================================
+
+
+@dataclass(slots=True)
+class AgentContext:
+    user_id: str
+    question: str
+    memory: Any  # MemoryBundle (avoid circular import)
+    history: Any | None = None  # ConversationHistory
+
+
+@dataclass(slots=True)
+class IntentResult:
+    intent: str  # "single" | "multi" | "regimen" | "general"
+    goal: str
+    has_explicit_category: bool
+    explicit_categories: list[str] = field(default_factory=list)
+    reasoning: str = ""
+    is_skincare_related: bool = True
+
+
+@dataclass(slots=True)
+class WorkflowPlan:
+    """Which processes to execute, decided by the LLM workflow planner."""
+    processes: list[str] = field(default_factory=list)
+    rationale: str = ""
+    needs_product_search: bool = False
+    needs_skincare_advice: bool = False
+
+
+@dataclass(slots=True)
+class RegimenStep:
+    category: str
+    purpose: str
+    search_query: str
+    time_of_day: str  # "morning" | "evening" | "periodic"
+    product_hits: list = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class RegimenPlan:
+    goal: str
+    goal_explanation: str
+    steps: list[RegimenStep] = field(default_factory=list)
+    must_have_categories: list[str] = field(default_factory=list)
+    avoid_ingredients: list[str] = field(default_factory=list)
+    notes: str = ""
+    category_priority: list[str] = field(default_factory=list)
+
+    @property
+    def morning_steps(self) -> list[RegimenStep]:
+        return [s for s in self.steps if s.time_of_day == "morning"]
+
+    @property
+    def evening_steps(self) -> list[RegimenStep]:
+        return [s for s in self.steps if s.time_of_day == "evening"]
+
+    @property
+    def periodic_steps(self) -> list[RegimenStep]:
+        return [s for s in self.steps if s.time_of_day == "periodic"]
+
+
+@dataclass(slots=True)
+class RetrievalResult:
+    product_hits: list
+    memory_hits: list
+    doc_hits: list
+    web_notes: list[str]
+    retrieval_plan: str
+    used_web: bool
+    memory_index_lines: list[str]
+    index_recall_lines: list[str]
+    open_memory_files: bool
+    relevant_memory_ids: list[str]
+    skill_plan: str
+    skill_names: list[str]
+    memory_file_snippets: list[str]
+    skill_body: str
+    history_block: str = ""
+    weather_info: str = ""
+    intent: str = "single"
+    regimen_goal: str = ""
+    regimen_plan: RegimenPlan | None = None
+    multi_category_hits: dict[str, list] = field(default_factory=dict)
+    workflow_plan: WorkflowPlan | None = None
+    is_general_chat: bool = False
+
+
+# ======================================================================
+# ConversationHistory (minimal, compression removed)
+# ======================================================================
+
+
 @dataclass(slots=True)
 class ConversationHistory:
-    """对话历史管理 —— 类似 Reasonix 的 Append-Only Log。
-
-    维护多轮对话，当上下文窗口使用率接近上限时，
-    用 LLM 对早期轮次做结构化摘要，保留最近几轮全文。
-
-    压缩时机由外部决定（基于 API 返回的 prompt_tokens 占比），
-    ConversationHistory 只提供数据结构和文本生成。
-    """
+    """对话历史管理 —— 基础数据结构，仅保留追加和获取能力。"""
     turns: list[Turn] = field(default_factory=list)
-    _compacted_up_to: int = 0          # 已压缩到第几轮
-    _compaction_summary: str = ""      # 压缩摘要文本
-
-    # Reasonix 风格的压缩比例常量
-    SOFT_COMPACT_RATIO: float = 0.5    # 达到 50% 时预警（不压缩，保持缓存）
-    COMPACT_RATIO: float = 0.75        # 达到 75% 时触发压缩
-    FORCE_COMPACT_RATIO: float = 0.9   # 达到 90% 时强制压缩
-    # 兜底线：未压缩轮次超过此数也触发压缩
-    # 因为 window=1M 时按比例触发需要~1500轮，
-    # 但太长 history 会让每次请求又重又慢
-    MAX_UNCOMPACTED_TURNS: int = 60
 
     @property
     def latest_turn(self) -> Turn | None:
@@ -226,82 +304,10 @@ class ConversationHistory:
         """获取最近 n 轮对话（完整内容）。"""
         return self.turns[-n:] if len(self.turns) >= n else self.turns[:]
 
-    def compactable_region(self, keep_recent: int = 10) -> list[Turn] | None:
-        """获取可以压缩的早期轮次（不包括最近 keep_recent 轮）。"""
-        if len(self.turns) <= keep_recent + 1:
-            return None
-        return self.turns[: -keep_recent]
 
-    def mark_compacted(self, summary: str, up_to_turn: int) -> None:
-        """标记压缩边界。"""
-        self._compacted_up_to = up_to_turn
-        self._compaction_summary = summary
-
-    def estimate_tokens(self, max_verbose_turns: int = 10) -> int:
-        """估算当前 history_block 的 token 数，用于预压缩判断。
-
-        使用保守估算（偏大），与 LLMClient.estimate_tokens 一致：
-        CJK ~1.5 chars/token，非 CJK ~3.5 chars/token。
-        """
-        block = self.history_block(max_verbose_turns)
-        if not block:
-            return 0
-        chars = len(block)
-        cjk_count = sum(1 for ch in block if '\u4e00' <= ch <= '\u9fff')
-        non_cjk = chars - cjk_count
-        return int(cjk_count * 1.5 + non_cjk / 3.5) + 8
-
-    def should_compact(self, prompt_ratio: float | None) -> bool:
-        """基于 prompt 占比或轮次阈值判断是否需要压缩。
-
-        Args:
-            prompt_ratio: 最近一次 API 调用的 prompt_tokens / context_window。
-                          None 表示尚无用量数据。
-
-        Returns:
-            是否需要压缩
-        """
-        # ① 比例触发（大窗口模型如 1M 很少靠这个触发）
-        if prompt_ratio is not None:
-            if prompt_ratio >= self.FORCE_COMPACT_RATIO:
-                return True
-            if prompt_ratio >= self.COMPACT_RATIO and self.compactable_region() is not None:
-                return True
-        # ② 轮次兜底触发：未压缩轮次超过上限（防止首次压缩遥遥无期）
-        if not self._compaction_summary and self.turn_count >= self.MAX_UNCOMPACTED_TURNS:
-            region = self.compactable_region()
-            return region is not None
-        return False
-
-    def history_block(self, max_verbose_turns: int = 10) -> str:
-        """生成对话历史文本块，用于注入 LLM context。
-
-        类似于 Reasonix 的 Compose：
-        - 有压缩摘要时：摘要在前，最近几轮完整内容在后
-        - 无压缩摘要时：展示全部轮次
-        """
-        parts: list[str] = []
-
-        # ① 压缩摘要（如果存在）
-        if self._compaction_summary:
-            parts.append(f"【早期对话摘要】\n{self._compaction_summary}\n")
-
-        # ② 对话记录
-        if self._compaction_summary:
-            display_turns = self.recent_turns(max_verbose_turns)
-        else:
-            display_turns = self.turns[:]  # 未压缩时展示全部
-
-        if display_turns:
-            label = "【最近对话记录】" if self._compaction_summary else "【对话历史】"
-            lines = [label]
-            for t in display_turns:
-                lines.append(t.to_summary_line(include_answer=True))
-            parts.append("\n".join(lines))
-
-        if not parts:
-            return ""
-        return "\n\n".join(parts)
+def json_dumps_pretty(obj: object) -> str:
+    """格式化 JSON 输出。"""
+    return json.dumps(obj, ensure_ascii=False, indent=2)
 
 
 def new_id() -> str:

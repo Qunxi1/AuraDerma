@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 import json
 
-from schema import ConversationHistory, MemoryItem, MemoryScope, Turn, new_id
+from schema import MemoryItem, MemoryScope, new_id
 
 
 @dataclass(slots=True)
@@ -196,59 +196,6 @@ class MemoryStore:
             if len(snippets) >= limit:
                 break
         return snippets
-
-    # ------------------------------------------------------------------
-    # 对话历史持久化（类似 Reasonix 的 Append-Only Log 持久层）
-    # ------------------------------------------------------------------
-
-    def _conversations_dir(self, user_id: str) -> Path:
-        """对话历史存储目录。"""
-        d = self.root / "conversations" / user_id
-        d.mkdir(parents=True, exist_ok=True)
-        return d
-
-    def save_conversation_history(self, user_id: str, history: ConversationHistory) -> None:
-        """持久化对话历史到 JSON 文件。"""
-        if not history.turns:
-            return
-        data = {
-            "compacted_up_to": history._compacted_up_to,
-            "compaction_summary": history._compaction_summary,
-            "turns": [
-                {
-                    "turn_index": t.turn_index,
-                    "user_question": t.user_question,
-                    "assistant_answer": t.assistant_answer,
-                    "timestamp": t.timestamp,
-                    "memory_ids": t.memory_ids,
-                }
-                for t in history.turns
-            ],
-        }
-        path = self._conversations_dir(user_id) / "history.json"
-        path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-
-    def load_conversation_history(self, user_id: str) -> ConversationHistory:
-        """从持久化文件加载对话历史。"""
-        path = self._conversations_dir(user_id) / "history.json"
-        if not path.exists():
-            return ConversationHistory()
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-            history = ConversationHistory()
-            history._compacted_up_to = data.get("compacted_up_to", 0)
-            history._compaction_summary = data.get("compaction_summary", "")
-            for t_data in data.get("turns", []):
-                history.turns.append(Turn(
-                    turn_index=t_data["turn_index"],
-                    user_question=t_data["user_question"],
-                    assistant_answer=t_data["assistant_answer"],
-                    timestamp=t_data.get("timestamp", ""),
-                    memory_ids=t_data.get("memory_ids", []),
-                ))
-            return history
-        except (json.JSONDecodeError, KeyError):
-            return ConversationHistory()
 
     def rebuild_indexes(self) -> None:
         for mem_file in self.memories_dir.rglob("*.json"):

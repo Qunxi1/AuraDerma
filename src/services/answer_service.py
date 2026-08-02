@@ -3,17 +3,71 @@ from __future__ import annotations
 from dataclasses import asdict
 from textwrap import dedent
 
-from agent import (
+from schema import (
     AgentContext,
-    MODE_INSTRUCTIONS,
     RetrievalResult,
-    DEFAULT_INSTRUCTIONS,
     json_dumps_pretty,
 )
 from core import get_logger
 from memory import aggregate_skin_profile
 
 log = get_logger("auraderma.answer")
+
+# ---------------------------------------------------------------------------
+# Answer mode instruction templates (moved from agent.py)
+# ---------------------------------------------------------------------------
+
+MODE_INSTRUCTIONS: dict[str, str] = {
+    "general_chat": (
+        "Structure:\n"
+        "1. Respond directly to the user's question in a natural, helpful way.\n"
+        "2. Do NOT mention skincare, beauty products, or any skincare-related advice.\n"
+        "3. Do NOT recommend any products.\n"
+        "4. If the user asks about general knowledge, provide a clear and concise answer.\n"
+        "5. If the user is chit-chatting, respond in a friendly and engaging manner.\n"
+        "6. Do NOT ask follow-up questions about skin or beauty.\n\n"
+        "IMPORTANT: This is a general conversation mode. The user is NOT asking about skincare. "
+        "Keep the response focused on their actual question only."
+    ),
+    "skincare_analysis": (
+        "Structure:\n"
+        "1. Analyze the user's skin concern based on general dermatological knowledge.\n"
+        "2. Explain possible causes (e.g. lifestyle, genetics, environment).\n"
+        "3. Provide medical disclaimer: this is not a diagnosis, consult a dermatologist for serious concerns.\n"
+        "4. If the user's question naturally leads to skincare advice, you MAY briefly mention "
+        "that certain types of products could help, but do NOT give specific product names.\n"
+        "5. One or two follow-up questions about your skin condition if appropriate.\n\n"
+        "Style: Educational and informative. Do NOT hard-sell any products."
+    ),
+    "product_search": (
+        "Structure:\n"
+        "1. Short assessment of the skin situation.\n"
+        "2. Suggested routine or treatment direction.\n"
+        "3. Product recommendations from the knowledge base.\n"
+        "4. If needed, web-sourced suggestions clearly marked as \"网页搜索参考，仅供参考\".\n"
+        "5. Cautions / contraindications.\n"
+        "6. One or two follow-up questions if needed.\n\n"
+        "IMPORTANT: Only recommend products that match the user's stated concerns."
+    ),
+    "regimen_planning": (
+        "Structure:\n"
+        "1. Short assessment of the skin situation.\n"
+        "2. Suggested routine or treatment direction.\n"
+        "3. Product recommendations from the knowledge base.\n"
+        "4. If needed, web-sourced suggestions clearly marked as \"网页搜索参考，仅供参考\".\n"
+        "5. Cautions / contraindications.\n"
+        "6. One or two follow-up questions if needed.\n\n"
+        "IMPORTANT: Present the regimen as a complete routine with morning/evening/periodic steps."
+    ),
+}
+
+DEFAULT_INSTRUCTIONS = (
+    "Structure:\n"
+    "1. Respond directly and helpfully to the user.\n"
+    "2. Be concise and clear.\n"
+    "3. Do not fabricate information.\n"
+    "4. If you don't know something, say so.\n"
+)
 
 
 class AnswerService:

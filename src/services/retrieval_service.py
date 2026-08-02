@@ -2,10 +2,9 @@ from __future__ import annotations
 
 from qdrant_client.http import models as qdrant_models
 
-from agent import AgentContext, IntentResult, RegimenPlan, WorkflowPlan
+from schema import AgentContext, IntentResult, RegimenPlan, WorkflowPlan, json_dumps_pretty
 from core import JsonParser, get_logger
 from prompts import MEMORY_ROUTER_PROMPT, RETRIEVAL_PROMPT, SKILL_ROUTER_PROMPT, SYSTEM_PROMPT
-from agent import json_dumps_pretty
 
 log = get_logger("auraderma.retrieval")
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from agent import IntentResult  # reuse existing dataclass
+from schema import IntentResult  # reuse existing dataclass
 from core import JsonParser, get_logger
 from prompts import INTENT_CLASSIFIER_PROMPT, SYSTEM_PROMPT
 

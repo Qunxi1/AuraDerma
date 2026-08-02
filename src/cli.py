@@ -68,7 +68,17 @@ def _build_runtime(
     ensure_search_config()
     warnings.filterwarnings("ignore", message=".*incompatible with server version.*")
     cfg = load_config()
-    qdrant = QdrantClient(url=cfg.qdrant_url, api_key=cfg.qdrant_api_key)
+
+    # 优先连接远程 Qdrant，失败则自动回退到本地持久化模式
+    if cfg.qdrant_api_key:
+        qdrant = QdrantClient(url=cfg.qdrant_url, api_key=cfg.qdrant_api_key)
+    else:
+        try:
+            qdrant = QdrantClient(url=cfg.qdrant_url, timeout=2)
+            qdrant.get_collections()  # 探活
+        except Exception:
+            log.warning("Qdrant 远程服务不可用（%s），回退到本地模式", cfg.qdrant_url)
+            qdrant = QdrantClient(path=str(cfg.data_dir / "qdrant"))
 
     embedder = LocalEmbedder()
 

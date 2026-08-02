@@ -50,3 +50,8 @@ htmlcov/
 Thumbs.db
 .vscode/
 .idea/
+
+# 以下规则由 git-push-check hook 自动追加（--fix）
+*.pem
+*.key
+credentials*.json
