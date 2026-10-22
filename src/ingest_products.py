@@ -3,10 +3,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from llm import LLMClient
 from retrieval import Retriever
 from schema import ProductRecord, new_id
-
 
 # ---------------------------------------------------------------------------
 # 品牌名称 -> 品牌英文/简称 映射表（可自行扩展）
@@ -45,12 +43,16 @@ def _extract_price_info(text: str) -> tuple[float | None, str | None, str]:
 
     # 净含量
     # 匹配模式：净含量50g、净含量为250ml、净含量：75g 等
-    nc_match = re.search(r"净含量[：:为]?\s*(\d+\.?\d*\s*(?:g|ml|片|粒|mL|G|ML))", text, re.IGNORECASE)
+    nc_match = re.search(
+        r"净含量[：:为]?\s*(\d+\.?\d*\s*(?:g|ml|片|粒|mL|G|ML))", text, re.IGNORECASE
+    )
     if nc_match:
         net_content = nc_match.group(1).strip()
     else:
         # 兜底：无"净含量"前缀的格式，如 "一盒5片面膜"、"一瓶30ml" 等
-        fallback = re.search(r"(\d+\.?\d*\s*(?:g|ml|片|粒|mL|G|ML))\s*(?:面膜|瓶|盒|支|管)", text, re.IGNORECASE)
+        fallback = re.search(
+            r"(\d+\.?\d*\s*(?:g|ml|片|粒|mL|G|ML))\s*(?:面膜|瓶|盒|支|管)", text, re.IGNORECASE
+        )
         if fallback:
             net_content = fallback.group(1).strip()
 
@@ -103,7 +105,7 @@ def _parse_product_block(block: str) -> dict:
             continue
         header = header_match.group(1).strip()
         # 提取内容（去掉标题行）
-        content = sec[header_match.end():].strip()
+        content = sec[header_match.end() :].strip()
 
         field = SECTION_FIELD_MAP.get(header)
         if field is None:
@@ -134,7 +136,7 @@ def _parse_product_block(block: str) -> dict:
 def parse_raw_file(filepath: str | Path) -> list[dict]:
     """
     解析护肤品原始文本文件，返回结构化产品字典列表。
-    
+
     文件格式：每个产品以 `# 产品名称` 开始，使用 `# 标题` 标注各章节。
     """
     filepath = Path(filepath)
@@ -169,7 +171,7 @@ def _extract_ingredients(text: str) -> tuple[list[str], str]:
     """
     从成分文本中提取成分列表和排序文本。
     格式可能是：
-      - "成分：水、甘油、..." 
+      - "成分：水、甘油、..."
       - 分类形式（保湿成分：... 舒缓成分：...）
     """
     ingredients: list[str] = []
@@ -233,9 +235,26 @@ def _extract_skin_types(text: str) -> list[str]:
 def _extract_concerns(text: str) -> list[str]:
     """从功效/描述文本中提取护肤关注点"""
     concern_keywords = [
-        "保湿", "修护", "修复", "控油", "祛痘", "去痘", "美白", "祛斑",
-        "淡斑", "抗皱", "紧致", "舒缓", "抗氧", "抗氧化", "提亮",
-        "去角质", "清洁", "防晒", "淡痘印", "去闭口",
+        "保湿",
+        "修护",
+        "修复",
+        "控油",
+        "祛痘",
+        "去痘",
+        "美白",
+        "祛斑",
+        "淡斑",
+        "抗皱",
+        "紧致",
+        "舒缓",
+        "抗氧",
+        "抗氧化",
+        "提亮",
+        "去角质",
+        "清洁",
+        "防晒",
+        "淡痘印",
+        "去闭口",
     ]
     concerns: list[str] = []
     for kw in concern_keywords:
@@ -432,7 +451,7 @@ def ingest_products_to_qdrant(
         search_texts = [r.search_text for r in records]
         vectors = embedder.embed(search_texts)
 
-        for record, vector in zip(records, vectors):
+        for record, vector in zip(records, vectors, strict=True):
             retriever.upsert_payload(
                 collection=retriever.products_collection,
                 point_id=record.product_id,

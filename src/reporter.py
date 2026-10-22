@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import sys
-
 
 class ProgressReporter:
     """打印简洁的阶段性提示，让用户知道当前在处理什么。"""

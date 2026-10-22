@@ -1,20 +1,20 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from enum import Enum
-from typing import Any
 import json
 import uuid
+from dataclasses import dataclass, field
+from enum import StrEnum
+from typing import Any
 
 
-class MemoryScope(str, Enum):
+class MemoryScope(StrEnum):
     PROFILE = "profile"
     SHORT_TERM = "short_term"
     LONG_TERM = "long_term"
     CASE = "case"
 
 
-class DocType(str, Enum):
+class DocType(StrEnum):
     PDF = "pdf"
     DOC = "doc"
     DOCX = "docx"
@@ -43,16 +43,16 @@ class ProductRecord:
     usage_notes: str = ""
     source: str = ""
     # --- 新增字段，来源于线上采集的丰富护肤品数据 ---
-    efficacy: str = ""              # 功效完整描述
-    core_efficacy: str = ""         # 核心功效
-    faq: list[str] = field(default_factory=list)        # 常见问题 Q&A，每个元素为 "Q: ... A: ..."
-    model_type: str = ""            # 型号/类别 (如 二类医疗器械、R型)
-    series: str = ""                # 品牌内部系列
-    net_content: str = ""           # 净含量/规格
-    storage: str = ""               # 贮存说明
-    usage_steps: str = ""           # 详细使用步骤
-    warnings: str = ""              # 注意事项/警告
-    search_text: str = ""           # 用于向量化的聚合搜索文本
+    efficacy: str = ""  # 功效完整描述
+    core_efficacy: str = ""  # 核心功效
+    faq: list[str] = field(default_factory=list)  # 常见问题 Q&A，每个元素为 "Q: ... A: ..."
+    model_type: str = ""  # 型号/类别 (如 二类医疗器械、R型)
+    series: str = ""  # 品牌内部系列
+    net_content: str = ""  # 净含量/规格
+    storage: str = ""  # 贮存说明
+    usage_steps: str = ""  # 详细使用步骤
+    warnings: str = ""  # 注意事项/警告
+    search_text: str = ""  # 用于向量化的聚合搜索文本
 
     def to_payload(self) -> dict[str, Any]:
         return {
@@ -176,6 +176,7 @@ class DocumentChunk:
 @dataclass(slots=True)
 class Turn:
     """单轮对话记录。"""
+
     turn_index: int
     user_question: str
     assistant_answer: str
@@ -215,6 +216,7 @@ class IntentResult:
 @dataclass(slots=True)
 class WorkflowPlan:
     """Which processes to execute, decided by the LLM workflow planner."""
+
     processes: list[str] = field(default_factory=list)
     rationale: str = ""
     needs_product_search: bool = False
@@ -287,6 +289,7 @@ class RetrievalResult:
 @dataclass(slots=True)
 class ConversationHistory:
     """对话历史管理 —— 基础数据结构，仅保留追加和获取能力。"""
+
     turns: list[Turn] = field(default_factory=list)
 
     @property

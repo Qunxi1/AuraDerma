@@ -3,13 +3,13 @@ from __future__ import annotations
 from dataclasses import asdict
 from textwrap import dedent
 
+from core import get_logger
+from memory import aggregate_skin_profile
 from schema import (
     AgentContext,
     RetrievalResult,
     json_dumps_pretty,
 )
-from core import get_logger
-from memory import aggregate_skin_profile
 
 log = get_logger("auraderma.answer")
 
@@ -33,7 +33,8 @@ MODE_INSTRUCTIONS: dict[str, str] = {
         "Structure:\n"
         "1. Analyze the user's skin concern based on general dermatological knowledge.\n"
         "2. Explain possible causes (e.g. lifestyle, genetics, environment).\n"
-        "3. Provide medical disclaimer: this is not a diagnosis, consult a dermatologist for serious concerns.\n"
+        "3. Provide medical disclaimer: this is not a diagnosis, "
+        "consult a dermatologist for serious concerns.\n"
         "4. If the user's question naturally leads to skincare advice, you MAY briefly mention "
         "that certain types of products could help, but do NOT give specific product names.\n"
         "5. One or two follow-up questions about your skin condition if appropriate.\n\n"
@@ -44,7 +45,7 @@ MODE_INSTRUCTIONS: dict[str, str] = {
         "1. Short assessment of the skin situation.\n"
         "2. Suggested routine or treatment direction.\n"
         "3. Product recommendations from the knowledge base.\n"
-        "4. If needed, web-sourced suggestions clearly marked as \"网页搜索参考，仅供参考\".\n"
+        '4. If needed, web-sourced suggestions clearly marked as "网页搜索参考，仅供参考".\n'
         "5. Cautions / contraindications.\n"
         "6. One or two follow-up questions if needed.\n\n"
         "IMPORTANT: Only recommend products that match the user's stated concerns."
@@ -54,7 +55,7 @@ MODE_INSTRUCTIONS: dict[str, str] = {
         "1. Short assessment of the skin situation.\n"
         "2. Suggested routine or treatment direction.\n"
         "3. Product recommendations from the knowledge base.\n"
-        "4. If needed, web-sourced suggestions clearly marked as \"网页搜索参考，仅供参考\".\n"
+        '4. If needed, web-sourced suggestions clearly marked as "网页搜索参考，仅供参考".\n'
         "5. Cautions / contraindications.\n"
         "6. One or two follow-up questions if needed.\n\n"
         "IMPORTANT: Present the regimen as a complete routine with morning/evening/periodic steps."
@@ -101,10 +102,9 @@ class AnswerService:
 
         if route.intent == "regimen" and route.regimen_plan:
             return self._answer_regimen(ctx, route)
-        elif route.intent == "multi" and route.multi_category_hits:
+        if route.intent == "multi" and route.multi_category_hits:
             return self._answer_multi(ctx, route)
-        else:
-            return self._answer_single(ctx, route)
+        return self._answer_single(ctx, route)
 
     def _answer_single(self, ctx: AgentContext, route: RetrievalResult) -> str:
         mode = "product_search"
@@ -115,8 +115,10 @@ class AnswerService:
             mode_instructions = MODE_INSTRUCTIONS.get(mode, DEFAULT_INSTRUCTIONS)
 
         from prompts import ANSWER_PROMPT
+
         answer_prompt_filled = ANSWER_PROMPT.format(
-            mode=mode, mode_instructions=mode_instructions,
+            mode=mode,
+            mode_instructions=mode_instructions,
         )
 
         context_block = self._build_context_block(ctx, route, mode, mode_instructions)
@@ -127,8 +129,10 @@ class AnswerService:
         mode_instructions = MODE_INSTRUCTIONS.get(mode, DEFAULT_INSTRUCTIONS)
 
         from prompts import ANSWER_PROMPT
+
         answer_prompt_filled = ANSWER_PROMPT.format(
-            mode=mode, mode_instructions=mode_instructions,
+            mode=mode,
+            mode_instructions=mode_instructions,
         )
 
         category_blocks: list[str] = []
@@ -144,16 +148,13 @@ class AnswerService:
                     price_str = f" (¥{price})" if price else ""
                     concerns = "、".join(p.get("concerns", [])[:4])
                     block += (
-                        f"\n  · [{brand}] {name}{price_str}"
-                        f" — {concerns}  [score={h.score:.2f}]"
+                        f"\n  · [{brand}] {name}{price_str} — {concerns}  [score={h.score:.2f}]"
                     )
             else:
                 block += "\n  (当前知识库暂无该品类产品)"
             category_blocks.append(block)
 
-        history_section = (
-            f"对话历史:\n{route.history_block}" if route.history_block else ""
-        )
+        history_section = f"对话历史:\n{route.history_block}" if route.history_block else ""
 
         skin_profile_section = AnswerService._build_skin_profile_block(ctx)
 
@@ -162,29 +163,29 @@ class AnswerService:
             {ctx.question}
 
             意图模式: multi
-            用户指定品类: {'、'.join(route.multi_category_hits.keys())}
+            用户指定品类: {"、".join(route.multi_category_hits.keys())}
 
             {history_section}
 
             {skin_profile_section}
 
             ── 按品类推荐 ──
-            {''.join(category_blocks)}
+            {"".join(category_blocks)}
 
             记忆索引:
-            {chr(10).join(route.memory_index_lines) if route.memory_index_lines else '无'}
+            {chr(10).join(route.memory_index_lines) if route.memory_index_lines else "无"}
 
             需要打开的记忆ID:
-            {', '.join(route.relevant_memory_ids) if route.relevant_memory_ids else '无'}
+            {", ".join(route.relevant_memory_ids) if route.relevant_memory_ids else "无"}
 
             打开的记忆原文片段:
-            {chr(10).join(route.memory_file_snippets) if route.memory_file_snippets else '无'}
+            {chr(10).join(route.memory_file_snippets) if route.memory_file_snippets else "无"}
 
             网页搜索参考:
-            {chr(10).join(route.web_notes) if route.web_notes else '无'}
+            {chr(10).join(route.web_notes) if route.web_notes else "无"}
 
             当地气候数据:
-            {route.weather_info if route.weather_info else '无'}
+            {route.weather_info if route.weather_info else "无"}
 
             ── 回答要求 ──
             请按品类分类回答，每个品类下列出对应的产品推荐。
@@ -199,19 +200,15 @@ class AnswerService:
         mode_instructions = MODE_INSTRUCTIONS.get(mode, DEFAULT_INSTRUCTIONS)
 
         from prompts import ANSWER_PROMPT
+
         answer_prompt_filled = ANSWER_PROMPT.format(
-            mode=mode, mode_instructions=mode_instructions,
+            mode=mode,
+            mode_instructions=mode_instructions,
         )
 
-        weather_section = (
-            f"当地气候数据:\n{route.weather_info}" if route.weather_info else ""
-        )
-        web_section = (
-            f"网页搜索参考:\n{chr(10).join(route.web_notes)}" if route.web_notes else ""
-        )
-        history_section = (
-            f"对话历史:\n{route.history_block}" if route.history_block else ""
-        )
+        weather_section = f"当地气候数据:\n{route.weather_info}" if route.weather_info else ""
+        web_section = f"网页搜索参考:\n{chr(10).join(route.web_notes)}" if route.web_notes else ""
+        history_section = f"对话历史:\n{route.history_block}" if route.history_block else ""
 
         context_block = dedent(f"""
             用户问题:
@@ -235,8 +232,10 @@ class AnswerService:
         mode_instructions = MODE_INSTRUCTIONS.get(mode, DEFAULT_INSTRUCTIONS)
 
         from prompts import ANSWER_PROMPT
+
         answer_prompt_filled = ANSWER_PROMPT.format(
-            mode=mode, mode_instructions=mode_instructions,
+            mode=mode,
+            mode_instructions=mode_instructions,
         )
 
         regimen_blocks: list[str] = []
@@ -272,9 +271,7 @@ class AnswerService:
         must_have_str = "、".join(plan.must_have_categories) if plan.must_have_categories else "无"
         avoid_str = "、".join(plan.avoid_ingredients) if plan.avoid_ingredients else "无"
 
-        history_section = (
-            f"对话历史:\n{route.history_block}" if route.history_block else ""
-        )
+        history_section = f"对话历史:\n{route.history_block}" if route.history_block else ""
 
         skin_profile_section = AnswerService._build_skin_profile_block(ctx)
 
@@ -290,28 +287,28 @@ class AnswerService:
             {skin_profile_section}
 
             ── 护肤体系规划 ──
-            {''.join(regimen_blocks)}
+            {"".join(regimen_blocks)}
 
             ── 体系约束 ──
             必须覆盖的品类: {must_have_str}
             建议避免的成分: {avoid_str}
-            品类优先级: {'、'.join(plan.category_priority) if plan.category_priority else '无'}
-            备注: {plan.notes if plan.notes else '无'}
+            品类优先级: {"、".join(plan.category_priority) if plan.category_priority else "无"}
+            备注: {plan.notes if plan.notes else "无"}
 
             记忆索引:
-            {chr(10).join(route.memory_index_lines) if route.memory_index_lines else '无'}
+            {chr(10).join(route.memory_index_lines) if route.memory_index_lines else "无"}
 
             需要打开的记忆ID:
-            {', '.join(route.relevant_memory_ids) if route.relevant_memory_ids else '无'}
+            {", ".join(route.relevant_memory_ids) if route.relevant_memory_ids else "无"}
 
             打开的记忆原文片段:
-            {chr(10).join(route.memory_file_snippets) if route.memory_file_snippets else '无'}
+            {chr(10).join(route.memory_file_snippets) if route.memory_file_snippets else "无"}
 
             网页搜索参考:
-            {chr(10).join(route.web_notes) if route.web_notes else '无'}
+            {chr(10).join(route.web_notes) if route.web_notes else "无"}
 
             当地气候数据:
-            {route.weather_info if route.weather_info else '无'}
+            {route.weather_info if route.weather_info else "无"}
 
             ── 回答要求 ──
             请按照日间→夜间→周期护理的时间线组织回答。
@@ -332,7 +329,8 @@ class AnswerService:
             return block
         # 如果 profile 为空，试试从 short_term 和 long_term 中找肤质信息
         all_skin = [
-            m for m in ctx.memory.short_term + ctx.memory.long_term
+            m
+            for m in ctx.memory.short_term + ctx.memory.long_term
             if any(kw in m.text for kw in ["肤质", "油", "干", "敏感", "痘", "过敏"])
         ]
         if all_skin:
@@ -353,9 +351,7 @@ class AnswerService:
         """
         from textwrap import dedent
 
-        history_section = (
-            f"对话历史:\n{route.history_block}" if route.history_block else ""
-        )
+        history_section = f"对话历史:\n{route.history_block}" if route.history_block else ""
 
         skin_profile_section = AnswerService._build_skin_profile_block(ctx)
 
@@ -371,30 +367,30 @@ class AnswerService:
             {route.retrieval_plan}
 
             工作流规划:
-            {json_dumps_pretty(asdict(route.workflow_plan)) if route.workflow_plan else '无'}
+            {json_dumps_pretty(asdict(route.workflow_plan)) if route.workflow_plan else "无"}
 
             {skin_profile_section}
 
             记忆索引:
-            {chr(10).join(route.memory_index_lines) if route.memory_index_lines else '无'}
+            {chr(10).join(route.memory_index_lines) if route.memory_index_lines else "无"}
 
             索引召回:
-            {chr(10).join(route.index_recall_lines) if route.index_recall_lines else '无'}
+            {chr(10).join(route.index_recall_lines) if route.index_recall_lines else "无"}
 
             需要打开的记忆ID:
-            {', '.join(route.relevant_memory_ids) if route.relevant_memory_ids else '无'}
+            {", ".join(route.relevant_memory_ids) if route.relevant_memory_ids else "无"}
 
             需要调用的技能:
-            {', '.join(route.skill_names) if route.skill_names else '无'}
+            {", ".join(route.skill_names) if route.skill_names else "无"}
 
             技能注册表正文:
-            {route.skill_body if route.skill_body else '无'}
+            {route.skill_body if route.skill_body else "无"}
 
             技能路由:
             {route.skill_plan}
 
             打开的记忆原文片段:
-            {chr(10).join(route.memory_file_snippets) if route.memory_file_snippets else '无'}
+            {chr(10).join(route.memory_file_snippets) if route.memory_file_snippets else "无"}
 
             内部产品召回:
             {AnswerService._format_hits(route.product_hits)}
@@ -406,10 +402,10 @@ class AnswerService:
             {AnswerService._format_hits(route.doc_hits)}
 
             网页搜索参考:
-            {chr(10).join(route.web_notes) if route.web_notes else '无'}
+            {chr(10).join(route.web_notes) if route.web_notes else "无"}
 
             当地气候数据:
-            {route.weather_info if route.weather_info else '无'}
+            {route.weather_info if route.weather_info else "无"}
         """).strip()
 
     @staticmethod

@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from textwrap import dedent
+from typing import ClassVar
 
-from schema import RegimenPlan, RegimenStep
 from core import JsonParser, get_logger
 from prompts import REGIMEN_PLANNER_PROMPT, SYSTEM_PROMPT
+from schema import RegimenPlan, RegimenStep
 
 log = get_logger("auraderma.regimen")
 
@@ -15,7 +16,7 @@ class RegimenService:
     根据用户目标规划完整的早晚护理流程。
     """
 
-    _TIME_SLOTS = [
+    _TIME_SLOTS: ClassVar[list[tuple[str, str]]] = [
         ("morning", "morning_steps"),
         ("evening", "evening_steps"),
         ("periodic", "periodic_steps"),
@@ -53,12 +54,14 @@ class RegimenService:
         steps: list[RegimenStep] = []
         for time_slot, key in self._TIME_SLOTS:
             for step_data in obj.get(key, []):
-                steps.append(RegimenStep(
-                    category=str(step_data.get("category", "")),
-                    purpose=str(step_data.get("purpose", "")),
-                    search_query=str(step_data.get("search_query", "")),
-                    time_of_day=time_slot,
-                ))
+                steps.append(
+                    RegimenStep(
+                        category=str(step_data.get("category", "")),
+                        purpose=str(step_data.get("purpose", "")),
+                        search_query=str(step_data.get("search_query", "")),
+                        time_of_day=time_slot,
+                    )
+                )
 
         plan = RegimenPlan(
             goal=goal,

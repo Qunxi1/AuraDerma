@@ -63,7 +63,8 @@ class JsonParser:
             if obj is not None:
                 log.warning(
                     "[%s] 从 markdown 代码块中提取 JSON (raw_preview=%s...)",
-                    context, cleaned[:max_preview_chars],
+                    context,
+                    cleaned[:max_preview_chars],
                 )
                 return obj
 
@@ -74,7 +75,8 @@ class JsonParser:
             if obj is not None:
                 log.warning(
                     "[%s] 自动修复后解析成功 (raw_preview=%s...)",
-                    context, cleaned[:max_preview_chars],
+                    context,
+                    cleaned[:max_preview_chars],
                 )
                 return obj
 
@@ -104,7 +106,8 @@ class JsonParser:
             if obj is not None:
                 log.warning(
                     "[%s] 从 markdown 代码块中提取 JSON 数组 (raw_preview=%s...)",
-                    context, cleaned[:max_preview_chars],
+                    context,
+                    cleaned[:max_preview_chars],
                 )
                 return obj
 
@@ -113,7 +116,8 @@ class JsonParser:
             obj = _try_parse_list(fixed)
             if obj is not None:
                 log.warning(
-                    "[%s] 自动修复后解析 JSON 数组成功", context,
+                    "[%s] 自动修复后解析 JSON 数组成功",
+                    context,
                 )
                 return obj
 
@@ -211,12 +215,12 @@ def _auto_fix_json(text: str) -> str | None:
 
     # 4. 将 ... 占位符替换为空字符串或 null
     fixed = re.sub(r'"\s*\.\.\.\s*"', '"..."', fixed)
-    fixed = re.sub(r'\.\.\.', '"..."', fixed)
+    fixed = re.sub(r"\.\.\.", '"..."', fixed)
 
     # 5. 将 Python 风格的 True/False/None 转换为 JSON true/false/null
-    fixed = re.sub(r'\bTrue\b', 'true', fixed)
-    fixed = re.sub(r'\bFalse\b', 'false', fixed)
-    fixed = re.sub(r'\bNone\b', 'null', fixed)
+    fixed = re.sub(r"\bTrue\b", "true", fixed)
+    fixed = re.sub(r"\bFalse\b", "false", fixed)
+    fixed = re.sub(r"\bNone\b", "null", fixed)
 
     # 如果修复后跟原始文本不同，返回修复版
     if fixed != text:
@@ -233,10 +237,7 @@ def _log_failure(
     """记录 JSON 解析失败的完整信息到日志文件。"""
     preview = raw[:max_preview]
     log.error(
-        "[%s] JSON 解析失败: %s\n"
-        "  raw_preview (first %d chars):\n"
-        "  %s\n"
-        "  raw_length=%d",
+        "[%s] JSON 解析失败: %s\n  raw_preview (first %d chars):\n  %s\n  raw_length=%d",
         context,
         reason,
         max_preview,

@@ -46,9 +46,9 @@ class WeatherService:
                 f"当前湿度：{weather['humidity']}%\n"
                 f"天气状况：{weather['condition']}"
             )
-            log.info("天气查询成功: city=%s temp=%s", city, weather.get('temperature'))
+            log.info("天气查询成功: city=%s temp=%s", city, weather.get("temperature"))
             return result
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — 外部 HTTP 服务，异常类型无法穷举
             log.warning("天气查询失败: city=%s error=%s", city, e)
             return f"天气查询失败: {e}"
 
@@ -59,7 +59,7 @@ class WeatherService:
             {question}
 
             用户画像记忆:
-            {chr(10).join(profile_lines) if profile_lines else '无'}
+            {chr(10).join(profile_lines) if profile_lines else "无"}
 
             请判断用户所在城市，返回 JSON。
         """).strip()

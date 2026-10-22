@@ -16,24 +16,22 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 from agent_react import ReActAgent
+from config import AppConfig, load_config
 from console.commands import (
     COMMAND_SPECS,
     MODEL_CHOICES,
     banner,
     handle_command,
-    help_text,
-    model_lines,
 )
 from console.readline import create_readline
-from config import AppConfig, load_config
 from core import get_logger
 from llm import LLMClient, LocalEmbedder
 from memory import MemoryBundle, MemoryPolicy, MemoryStore
 from reporter import ProgressReporter
 from retrieval import Retriever
+from search_config import ensure_search_config
 from skill_manager import SkillManager
 from skills.web_search.client import WebSearchClient
-from search_config import ensure_search_config
 
 log = get_logger("auraderma.cli")
 
@@ -45,6 +43,7 @@ log = get_logger("auraderma.cli")
 @dataclass(slots=True)
 class Runtime:
     """一次构建产出的所有运行时组件。"""
+
     react_agent: ReActAgent
     cfg: AppConfig
     model: str
@@ -76,7 +75,7 @@ def _build_runtime(
         try:
             qdrant = QdrantClient(url=cfg.qdrant_url, timeout=2)
             qdrant.get_collections()  # 探活
-        except Exception:
+        except Exception:  # noqa: BLE001 — 探活失败即回退本地模式，异常类型无需细分
             log.warning("Qdrant 远程服务不可用（%s），回退到本地模式", cfg.qdrant_url)
             qdrant = QdrantClient(path=str(cfg.data_dir / "qdrant"))
 
@@ -240,9 +239,7 @@ def _do_chat(
     memory.short_term = fresh.short_term
     memory.long_term = fresh.long_term
     memory.case_notes = fresh.case_notes
-    memory.short_term.append(
-        session.policy.classify(f"本轮对话：{cmd}", user_id=user_id)
-    )
+    memory.short_term.append(session.policy.classify(f"本轮对话：{cmd}", user_id=user_id))
     return result.answer
 
 

@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from datetime import datetime, timedelta
-from pathlib import Path
-from typing import Any
 import json
+from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from typing import Any, ClassVar
 
 from schema import MemoryItem, MemoryScope, new_id
 
@@ -48,24 +48,65 @@ class MemoryPolicy:
 
     # ---------- 肤质自然语言模式库 ----------
     # 用于 classify() 的自然语言匹配
-    _SKIN_TYPE_PATTERNS: list[str] = [
+    _SKIN_TYPE_PATTERNS: ClassVar[list[str]] = [
         # 明确肤质
-        "油皮", "干皮", "混油", "混干", "中性皮", "敏感皮", "痘肌",
-        "油性", "干性", "混合性", "中性", "敏感性",
+        "油皮",
+        "干皮",
+        "混油",
+        "混干",
+        "中性皮",
+        "敏感皮",
+        "痘肌",
+        "油性",
+        "干性",
+        "混合性",
+        "中性",
+        "敏感性",
         # 自然表达：T区
-        "t区油", "t区出油", "t区偏油", "t区很油", "t区爱出油",
-        "t区干", "t区偏干", "t区很干",
+        "t区油",
+        "t区出油",
+        "t区偏油",
+        "t区很油",
+        "t区爱出油",
+        "t区干",
+        "t区偏干",
+        "t区很干",
         # 自然表达：脸颊/两颊
-        "脸颊干", "脸颊偏干", "脸颊很干", "两颊干", "两颊偏干",
-        "脸颊油", "脸颊偏油", "两颊油", "两颊出油",
+        "脸颊干",
+        "脸颊偏干",
+        "脸颊很干",
+        "两颊干",
+        "两颊偏干",
+        "脸颊油",
+        "脸颊偏油",
+        "两颊油",
+        "两颊出油",
         # 自然表达：综合
-        "外油内干", "内油外干", "又油又干",
-        "额头油", "下巴油", "鼻子油",
+        "外油内干",
+        "内油外干",
+        "又油又干",
+        "额头油",
+        "下巴油",
+        "鼻子油",
         # 敏感/过敏
-        "容易过敏", "容易泛红", "容易敏感", "皮肤薄", "屏障受损",
-        "泛红", "红血丝", "刺痛", "发痒", "起皮", "脱皮",
+        "容易过敏",
+        "容易泛红",
+        "容易敏感",
+        "皮肤薄",
+        "屏障受损",
+        "泛红",
+        "红血丝",
+        "刺痛",
+        "发痒",
+        "起皮",
+        "脱皮",
         # 痘痘相关
-        "爱长痘", "容易长痘", "反复长痘", "闭口", "粉刺", "痘痘",
+        "爱长痘",
+        "容易长痘",
+        "反复长痘",
+        "闭口",
+        "粉刺",
+        "痘痘",
     ]
 
     def classify(self, text: str, user_id: str, source_doc_id: str | None = None) -> MemoryItem:
@@ -103,12 +144,12 @@ class MemoryPolicy:
         return item.scope in {MemoryScope.PROFILE, MemoryScope.LONG_TERM}
 
     def created_at(self) -> str:
-        return datetime.utcnow().isoformat(timespec="seconds") + "Z"
+        return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     def expires_at(self, item: MemoryItem) -> str | None:
         if item.ttl_days is None:
             return None
-        return (datetime.utcnow() + timedelta(days=item.ttl_days)).isoformat(timespec="seconds") + "Z"
+        return (datetime.now(UTC) + timedelta(days=item.ttl_days)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 class MemoryStore:
@@ -125,7 +166,9 @@ class MemoryStore:
     def append(self, item: MemoryItem) -> Path:
         mem_path = self._memory_path(item)
         mem_path.parent.mkdir(parents=True, exist_ok=True)
-        mem_path.write_text(json.dumps(self._serialize(item), ensure_ascii=False, indent=2), encoding="utf-8")
+        mem_path.write_text(
+            json.dumps(self._serialize(item), ensure_ascii=False, indent=2), encoding="utf-8"
+        )
         self._write_index(item, mem_path)
         return mem_path
 
@@ -142,7 +185,9 @@ class MemoryStore:
                 bundle.case_notes.append(item)
         return bundle
 
-    def load_index(self, user_id: str, limit: int = 30, scopes: set[str] | None = None) -> list[str]:
+    def load_index(
+        self, user_id: str, limit: int = 30, scopes: set[str] | None = None
+    ) -> list[str]:
         lines: list[str] = []
         for index_file in sorted(self.index_dir.rglob("*.json")):
             data = json.loads(index_file.read_text(encoding="utf-8"))
@@ -168,7 +213,9 @@ class MemoryStore:
         keywords = [k for k in _tokenize(query) if len(k) > 1]
         scored: list[tuple[int, dict[str, Any]]] = []
         for rec in records:
-            hay = " ".join([rec.get("summary", ""), " ".join(rec.get("tags", [])), rec.get("scope", "")])
+            hay = " ".join(
+                [rec.get("summary", ""), " ".join(rec.get("tags", [])), rec.get("scope", "")]
+            )
             score = sum(1 for k in keywords if k in hay)
             scored.append((score, rec))
         scored.sort(key=lambda x: (x[0], x[1].get("created_at", "")), reverse=True)
@@ -177,7 +224,9 @@ class MemoryStore:
             selected = [rec for _, rec in scored[:limit]]
         return [f"[{rec.get('scope')}] {rec.get('summary', '')}" for rec in selected]
 
-    def read_relevant_memory_texts(self, user_id: str, memory_ids: list[str], query: str, limit: int = 4) -> list[str]:
+    def read_relevant_memory_texts(
+        self, user_id: str, memory_ids: list[str], query: str, limit: int = 4
+    ) -> list[str]:
         if not memory_ids:
             return []
         query_terms = [t for t in _tokenize(query) if len(t) > 1]
@@ -224,7 +273,9 @@ class MemoryStore:
             "memory_file": str(mem_path),
         }
         if overwrite or not index_path.exists():
-            index_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            index_path.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
 
     def _load_all_items(self, user_id: str, limit: int = 200) -> list[MemoryItem]:
         items: list[MemoryItem] = []
@@ -257,12 +308,12 @@ class MemoryStore:
         )
 
     def created_at(self) -> str:
-        return datetime.utcnow().isoformat(timespec="seconds") + "Z"
+        return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     def expires_at(self, item: MemoryItem) -> str | None:
         if item.ttl_days is None:
             return None
-        return (datetime.utcnow() + timedelta(days=item.ttl_days)).isoformat(timespec="seconds") + "Z"
+        return (datetime.now(UTC) + timedelta(days=item.ttl_days)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 # ======================================================================
@@ -272,22 +323,29 @@ class MemoryStore:
 
 @dataclass(slots=True)
 class SkinProfile:
-    skin_type: str | None = None          # 油皮/干皮/混油/混干/中性/敏感
-    t_zone: str | None = None             # T区：油/干/正常
-    cheeks: str | None = None             # 脸颊：油/干/正常
-    sensitivity: str | None = None        # 敏感程度：敏感/一般/耐受
-    acne_prone: bool | None = None        # 是否易长痘
+    skin_type: str | None = None  # 油皮/干皮/混油/混干/中性/敏感
+    t_zone: str | None = None  # T区：油/干/正常
+    cheeks: str | None = None  # 脸颊：油/干/正常
+    sensitivity: str | None = None  # 敏感程度：敏感/一般/耐受
+    acne_prone: bool | None = None  # 是否易长痘
     concerns: list[str] = field(default_factory=list)  # 护肤诉求列表
     allergies: list[str] = field(default_factory=list)  # 过敏/避开的成分
-    climate: str | None = None            # 所在地气候
+    climate: str | None = None  # 所在地气候
     raw_memories: list[str] = field(default_factory=list)  # 原始记忆文本
 
     def is_empty(self) -> bool:
-        return not any([
-            self.skin_type, self.t_zone, self.cheeks,
-            self.sensitivity, self.acne_prone,
-            self.concerns, self.allergies, self.climate,
-        ])
+        return not any(
+            [
+                self.skin_type,
+                self.t_zone,
+                self.cheeks,
+                self.sensitivity,
+                self.acne_prone,
+                self.concerns,
+                self.allergies,
+                self.climate,
+            ]
+        )
 
     def to_formatted_block(self) -> str:
         """生成 LLM-friendly 的结构化肤质画像文本块。"""
@@ -323,7 +381,9 @@ def aggregate_skin_profile(memories: list[MemoryItem]) -> SkinProfile:
     profile.raw_memories = texts[:]
 
     # ── T区状态 ──
-    t_oily = any("t区油" in t or "t区出油" in t or "t区偏油" in t or "t区爱出油" in t for t in texts)
+    t_oily = any(
+        "t区油" in t or "t区出油" in t or "t区偏油" in t or "t区爱出油" in t for t in texts
+    )
     t_dry = any("t区干" in t or "t区偏干" in t for t in texts)
     if t_oily and t_dry:
         profile.t_zone = "混合（又油又干）"
@@ -335,8 +395,12 @@ def aggregate_skin_profile(memories: list[MemoryItem]) -> SkinProfile:
         profile.t_zone = "正常"
 
     # ── 脸颊状态 ──
-    cheek_oily = any("脸颊油" in t or "脸颊偏油" in t or "两颊油" in t or "两颊出油" in t for t in texts)
-    cheek_dry = any("脸颊干" in t or "脸颊偏干" in t or "两颊干" in t or "两颊偏干" in t for t in texts)
+    cheek_oily = any(
+        "脸颊油" in t or "脸颊偏油" in t or "两颊油" in t or "两颊出油" in t for t in texts
+    )
+    cheek_dry = any(
+        "脸颊干" in t or "脸颊偏干" in t or "两颊干" in t or "两颊偏干" in t for t in texts
+    )
     if cheek_oily and cheek_dry:
         profile.cheeks = "混合（又油又干）"
     elif cheek_oily:
@@ -364,7 +428,16 @@ def aggregate_skin_profile(memories: list[MemoryItem]) -> SkinProfile:
         profile.skin_type = "中性"
 
     # ── 敏感程度 ──
-    sensitivity_keywords = ["敏感", "过敏", "容易泛红", "红血丝", "刺痛", "发痒", "屏障受损", "皮肤薄"]
+    sensitivity_keywords = [
+        "敏感",
+        "过敏",
+        "容易泛红",
+        "红血丝",
+        "刺痛",
+        "发痒",
+        "屏障受损",
+        "皮肤薄",
+    ]
     if any(any(kw in t for kw in sensitivity_keywords) for t in texts):
         profile.sensitivity = "敏感"
     else:
@@ -389,10 +462,9 @@ def aggregate_skin_profile(memories: list[MemoryItem]) -> SkinProfile:
     }
     seen: set[str] = set()
     for concern, keywords in concern_map.items():
-        if any(any(kw in t for kw in keywords) for t in texts):
-            if concern not in seen:
-                profile.concerns.append(concern)
-                seen.add(concern)
+        if any(any(kw in t for kw in keywords) for t in texts) and concern not in seen:
+            profile.concerns.append(concern)
+            seen.add(concern)
 
     # ── 过敏/避开成分 ──
     allergy_keywords = ["过敏", "不耐受", "避开", "不能用", "不能用含"]

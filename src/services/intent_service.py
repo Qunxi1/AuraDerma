@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-
-from schema import IntentResult  # reuse existing dataclass
 from core import JsonParser, get_logger
 from prompts import INTENT_CLASSIFIER_PROMPT, SYSTEM_PROMPT
+from schema import IntentResult  # reuse existing dataclass
 
 log = get_logger("auraderma.intent")
 
@@ -48,6 +46,8 @@ class IntentService:
         )
         log.info(
             "意图分类结果: intent=%s goal=%s categories=%s",
-            result.intent, result.goal, result.explicit_categories,
+            result.intent,
+            result.goal,
+            result.explicit_categories,
         )
         return result

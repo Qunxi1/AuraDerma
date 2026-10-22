@@ -13,13 +13,21 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any
 
 from core.json_parser import JsonParser
 from core.logger import get_logger
 from llm import LLMClient
-from memory import MemoryBundle, MemoryItem, MemoryScope, MemoryStore, aggregate_skin_profile, new_id
+from memory import (
+    MemoryBundle,
+    MemoryItem,
+    MemoryScope,
+    MemoryStore,
+    aggregate_skin_profile,
+    new_id,
+)
 from prompts import SYSTEM_PROMPT
 from prompts_react import REACT_SYSTEM_PROMPT, REACT_TOOLS
 
@@ -29,6 +37,7 @@ log = get_logger("auraderma.react")
 @dataclass(slots=True)
 class ReActResult:
     """一次 ReAct 循环的结果。"""
+
     answer: str
     steps: list[dict[str, Any]] = field(default_factory=list)
     total_tool_calls: int = 0
@@ -47,10 +56,10 @@ class ReActAgent:
     def __init__(
         self,
         llm: LLMClient,
-        retriever,       # Retriever (Qdrant)
-        embedder,        # LocalEmbedder
-        web,             # WebSearchClient
-        reporter=None,   # ProgressReporter
+        retriever,  # Retriever (Qdrant)
+        embedder,  # LocalEmbedder
+        web,  # WebSearchClient
+        reporter=None,  # ProgressReporter
     ) -> None:
         self.llm = llm
         self.retriever = retriever
@@ -126,22 +135,29 @@ class ReActAgent:
                     tool_result = self._execute_tool(tool_name, args, user_id, memory)
                     tool_call_count += 1
 
-                    steps.append({
-                        "step": step_idx + 1,
-                        "tool": tool_name,
-                        "args": args,
-                        "result_preview": tool_result[:200],
-                    })
+                    steps.append(
+                        {
+                            "step": step_idx + 1,
+                            "tool": tool_name,
+                            "args": args,
+                            "result_preview": tool_result[:200],
+                        }
+                    )
                     log.info(
                         "ReAct step=%d tool=%s args=%s result=%s...",
-                        step_idx + 1, tool_name, args, tool_result[:80],
+                        step_idx + 1,
+                        tool_name,
+                        args,
+                        tool_result[:80],
                     )
 
-                    messages.append({
-                        "role": "tool",
-                        "tool_call_id": tc["id"],
-                        "content": tool_result,
-                    })
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tc["id"],
+                            "content": tool_result,
+                        }
+                    )
 
             # 情况2: LLM 给出最终回答
             elif content and content.strip():
@@ -153,20 +169,26 @@ class ReActAgent:
             else:
                 log.warning("ReAct step=%d 空响应", step_idx + 1)
                 if tool_call_count > 0:
-                    messages.append({
-                        "role": "user",
-                        "content": "请基于现有的信息，直接给出最终回答。不要继续调用工具。",
-                    })
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": "请基于现有的信息，直接给出最终回答。不要继续调用工具。",
+                        }
+                    )
                 else:
                     final_answer = "抱歉，我暂时无法处理你的问题，请稍后再试。"
                     break
 
         # 循环结束仍未得到答案，强制要求回答
         if not final_answer:
-            messages.append({
-                "role": "user",
-                "content": "你已经调用了所有可用工具。请基于以上所有信息，直接给出完整的最终回答。",
-            })
+            messages.append(
+                {
+                    "role": "user",
+                    "content": (
+                        "你已经调用了所有可用工具。请基于以上所有信息，直接给出完整的最终回答。"
+                    ),
+                }
+            )
             response = self.llm.chat_messages(messages=messages, temperature=0.3)
             final_answer = response.get("content", "抱歉，暂时无法回答你的问题。").strip()
 
@@ -178,7 +200,11 @@ class ReActAgent:
     # ==================================================================
 
     def _execute_tool(
-        self, tool_name: str, args: dict[str, Any], user_id: str, memory: MemoryBundle,
+        self,
+        tool_name: str,
+        args: dict[str, Any],
+        user_id: str,
+        memory: MemoryBundle,
     ) -> str:
         dispatcher: dict[str, Callable[[dict, str, MemoryBundle], str]] = {
             "search_products": self._tool_search_products,
@@ -258,9 +284,12 @@ class ReActAgent:
         profile = aggregate_skin_profile(memory.profile)
         if profile.is_empty():
             all_skin = [
-                m for m in memory.short_term + memory.long_term
-                if any(kw in m.text.lower() for kw in
-                       ["肤质", "油", "干", "敏感", "痘", "过敏", "t区", "脸颊", "泛红"])
+                m
+                for m in memory.short_term + memory.long_term
+                if any(
+                    kw in m.text.lower()
+                    for kw in ["肤质", "油", "干", "敏感", "痘", "过敏", "t区", "脸颊", "泛红"]
+                )
             ]
             if all_skin:
                 profile = aggregate_skin_profile(all_skin)
@@ -273,7 +302,9 @@ class ReActAgent:
 
         block = profile.to_formatted_block()
         if profile.raw_memories:
-            block += "\n\n原始记忆:\n" + "\n".join(f"  - {t[:100]}" for t in profile.raw_memories[:10])
+            block += "\n\n原始记忆:\n" + "\n".join(
+                f"  - {t[:100]}" for t in profile.raw_memories[:10]
+            )
         return block
 
     # ── web_search ──
@@ -295,7 +326,7 @@ class ReActAgent:
             for r in results:
                 lines.append(f"- **{r.title}**\n  摘要: {r.snippet[:200]}\n  链接: {r.url}")
             return "\n".join(lines)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — 工具边界兜底，搜索失败转成文本回传
             return f"网页搜索失败: {exc}"
 
     # ── weather_check ──
@@ -313,12 +344,16 @@ class ReActAgent:
         try:
             with urllib.request.urlopen(url, timeout=10) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — 工具边界兜底，天气失败转成文本回传
             return f"天气查询失败: {exc}"
 
         current = data.get("current_condition", [{}])[0]
         area = data.get("nearest_area", [{}])[0]
-        aname = (area.get("areaName", [{}]) or [{}])[0].get("value", city) if area.get("areaName") else city
+        aname = (
+            (area.get("areaName", [{}]) or [{}])[0].get("value", city)
+            if area.get("areaName")
+            else city
+        )
         temp = current.get("temp_C", "?")
         humidity = current.get("humidity", "?")
         cond = (current.get("weatherDesc", [{}]) or [{}])[0].get("value", "未知")
@@ -341,7 +376,7 @@ class ReActAgent:
 
         lines = [f"文档搜索「{query}」结果:"]
         for h in hits:
-            title = (h.payload.get("title") or h.payload.get("section") or "")
+            title = h.payload.get("title") or h.payload.get("section") or ""
             text = (h.payload.get("text", ""))[:200]
             lines.append(f"- **{title}**\n  {text}...")
         return "\n".join(lines)
@@ -362,9 +397,12 @@ class ReActAgent:
         profile = aggregate_skin_profile(memory.profile)
         if profile.is_empty():
             all_skin = [
-                m for m in memory.short_term + memory.long_term
-                if any(kw in m.text.lower() for kw in
-                       ["肤质", "油", "干", "敏感", "痘", "过敏", "t区", "脸颊", "泛红"])
+                m
+                for m in memory.short_term + memory.long_term
+                if any(
+                    kw in m.text.lower()
+                    for kw in ["肤质", "油", "干", "敏感", "痘", "过敏", "t区", "脸颊", "泛红"]
+                )
             ]
             if all_skin:
                 profile = aggregate_skin_profile(all_skin)
@@ -374,7 +412,11 @@ class ReActAgent:
         return self._cached_profile_text
 
     def _save_to_memory(
-        self, user_id: str, question: str, answer: str, memory_store: MemoryStore,
+        self,
+        user_id: str,
+        question: str,
+        answer: str,
+        memory_store: MemoryStore,
     ) -> None:
         dialog_text = f"用户: {question}\n助手: {answer}"
         prompt = (
@@ -406,6 +448,6 @@ class ReActAgent:
                     if "profile" not in mem.tags:
                         mem.tags.append("profile")
                 memory_store.append(mem)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — 记忆提取失败不应中断对话
             log.warning("ReAct 记忆提取失败: %s", exc)
         self._cached_user_id = ""

@@ -112,9 +112,7 @@ PROVIDERS_NO_CONFIG: set[str] = {"bing", "bing-intl"}
 
 # 所有支持的提供方
 ALL_SUPPORTED_PROVIDERS: set[str] = (
-    set(PROVIDER_TO_FIELD)
-    | set(PROVIDER_TO_ENDPOINT_FIELD)
-    | PROVIDERS_NO_CONFIG
+    set(PROVIDER_TO_FIELD) | set(PROVIDER_TO_ENDPOINT_FIELD) | PROVIDERS_NO_CONFIG
 )
 
 
@@ -139,6 +137,7 @@ def _get_field(field_name: str) -> str | None:
 # ---------------------------------------------------------------------------
 # 公共 API
 # ---------------------------------------------------------------------------
+
 
 class SearchApiKeys:
     """所有 Search API 密钥的统一访问入口。

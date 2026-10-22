@@ -3,12 +3,14 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
 from openai import OpenAI
 
 
 @dataclass(slots=True)
 class ChatUsage:
     """API 返回的 token 用量。"""
+
     prompt_tokens: int
     completion_tokens: int
     total_tokens: int
@@ -70,11 +72,11 @@ class LLMClient:
               - tool_calls: list[dict] | None (工具调用)
               - usage: ChatUsage | None
         """
-        kwargs: dict[str, Any] = dict(
-            model=self.model,
-            messages=messages,
-            temperature=temperature,
-        )
+        kwargs: dict[str, Any] = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": temperature,
+        }
         if tools:
             kwargs["tools"] = tools
         if tool_choice:
@@ -106,7 +108,9 @@ class LLMClient:
             ]
         return result
 
-    def embed(self, texts: list[str], embedding_model: str = "text-embedding-3-small") -> list[list[float]]:
+    def embed(
+        self, texts: list[str], embedding_model: str = "text-embedding-3-small"
+    ) -> list[list[float]]:
         response = self._client.embeddings.create(model=embedding_model, input=texts)
         return [item.embedding for item in response.data]
 
@@ -121,7 +125,7 @@ class LLMClient:
         if not text:
             return 0
         chars = len(text)
-        cjk_count = sum(1 for ch in text if '\u4e00' <= ch <= '\u9fff')
+        cjk_count = sum(1 for ch in text if "\u4e00" <= ch <= "\u9fff")
         non_cjk = chars - cjk_count
         # CJK: ~1.5 chars/token; 非 CJK: ~4 chars/token; 取保守值
         return int(cjk_count * 1.5 + non_cjk / 3.5) + 8  # +8 为消息框架开销

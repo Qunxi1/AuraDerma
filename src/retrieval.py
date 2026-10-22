@@ -15,13 +15,25 @@ class SearchHit:
 
 
 class Retriever:
-    def __init__(self, client: QdrantClient, products_collection: str, memory_collection: str, docs_collection: str) -> None:
+    def __init__(
+        self,
+        client: QdrantClient,
+        products_collection: str,
+        memory_collection: str,
+        docs_collection: str,
+    ) -> None:
         self.client = client
         self.products_collection = products_collection
         self.memory_collection = memory_collection
         self.docs_collection = docs_collection
 
-    def search(self, collection: str, query_vector: list[float], limit: int = 5, filters: models.Filter | None = None) -> list[SearchHit]:
+    def search(
+        self,
+        collection: str,
+        query_vector: list[float],
+        limit: int = 5,
+        filters: models.Filter | None = None,
+    ) -> list[SearchHit]:
         # query_points 兼容本地模式和服务器模式
         results = self.client.query_points(
             collection_name=collection,
@@ -30,9 +42,14 @@ class Retriever:
             query_filter=filters,
             with_payload=True,
         )
-        return [SearchHit(id=str(hit.id), score=hit.score or 0.0, payload=hit.payload or {}) for hit in results.points]
+        return [
+            SearchHit(id=str(hit.id), score=hit.score or 0.0, payload=hit.payload or {})
+            for hit in results.points
+        ]
 
-    def upsert_payload(self, collection: str, point_id: str, vector: list[float], payload: dict[str, Any]) -> None:
+    def upsert_payload(
+        self, collection: str, point_id: str, vector: list[float], payload: dict[str, Any]
+    ) -> None:
         self.client.upsert(
             collection_name=collection,
             points=[models.PointStruct(id=point_id, vector=vector, payload=payload)],
@@ -44,7 +61,9 @@ class Retriever:
             if name not in existing:
                 self.client.create_collection(
                     collection_name=name,
-                    vectors_config=models.VectorParams(size=vector_size, distance=models.Distance.COSINE),
+                    vectors_config=models.VectorParams(
+                        size=vector_size, distance=models.Distance.COSINE
+                    ),
                 )
             else:
                 # 校验已有 collection 的向量维度是否匹配

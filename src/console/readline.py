@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import contextlib
 import platform
 import sys
-from typing import Callable
+from collections.abc import Callable
 
 from core import get_logger
 
@@ -28,13 +29,13 @@ def create_readline(
 
     if system == "Windows":
         return _make_aris_readline(model_name, command_names, command_descriptions, history)
-    else:
-        return _make_unix_readline(model_name, command_names, history)
+    return _make_unix_readline(model_name, command_names, history)
 
 
 # ---------------------------------------------------------------------------
 # Windows: msvcrt-based rich readline (preserved from original)
 # ---------------------------------------------------------------------------
+
 
 def _make_aris_readline(
     model_name: str,
@@ -45,7 +46,7 @@ def _make_aris_readline(
     """ARIS-style readline for Windows using msvcrt."""
     import msvcrt  # Windows only
 
-    command_specs = list(zip(command_names, command_descriptions))
+    command_specs = list(zip(command_names, command_descriptions, strict=True))
 
     def readline() -> str | None:
         buf: list[str] = []
@@ -54,10 +55,7 @@ def _make_aris_readline(
         history_idx: int | None = None
         saved_buf: list[str] | None = None
 
-        prompt_str = (
-            f"\x1b[36m\x1b[1mAuraDerma \x1b[34m[{model_name}] "
-            f"\x1b[33m\x1b[1m> \x1b[0m"
-        )
+        prompt_str = f"\x1b[36m\x1b[1mAuraDerma \x1b[34m[{model_name}] \x1b[33m\x1b[1m> \x1b[0m"
         prompt_visible_len = 15 + len(model_name)
 
         def _display_width(s: str) -> int:
@@ -232,16 +230,16 @@ def _make_aris_readline(
 # Unix / cross-platform: readline-based simple input
 # ---------------------------------------------------------------------------
 
+
 def _make_unix_readline(
     model_name: str,
     command_names: list[str],
     history: list[str],
 ) -> Callable[[], str | None]:
     """Unix-style readline using Python's readline module for history/editing."""
-    try:
-        import readline  # noqa: F401
-    except ImportError:
-        pass  # readline not available, fall back to plain input
+    with contextlib.suppress(ImportError):
+        # readline 在某些环境不可用，降级到基础输入
+        import readline
 
     prompt = f"AuraDerma [{model_name}] > "
 

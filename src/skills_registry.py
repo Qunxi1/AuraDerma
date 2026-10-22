@@ -30,7 +30,9 @@ class SkillsRegistry:
                 SkillSpec(
                     name=skill_dir.name,
                     summary=summary_path.read_text(encoding="utf-8").strip(),
-                    body=body_path.read_text(encoding="utf-8").strip() if body_path.exists() else "",
+                    body=body_path.read_text(encoding="utf-8").strip()
+                    if body_path.exists()
+                    else "",
                     path=skill_dir,
                 )
             )

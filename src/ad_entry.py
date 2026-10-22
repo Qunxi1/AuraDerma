@@ -15,7 +15,9 @@ def _ensure_qdrant() -> None:
 
     result = subprocess.run(
         ["docker", "ps", "-a", "--format", "{{.Names}}"],
-        capture_output=True, text=True, check=False,
+        capture_output=True,
+        text=True,
+        check=False,
     )
     names = result.stdout.strip().splitlines()
     container_exists = "auraderma-qdrant" in names
@@ -28,7 +30,9 @@ def _ensure_qdrant() -> None:
     else:
         running = subprocess.run(
             ["docker", "ps", "--format", "{{.Names}}"],
-            capture_output=True, text=True, check=False,
+            capture_output=True,
+            text=True,
+            check=False,
         )
         if "auraderma-qdrant" not in running.stdout.strip().splitlines():
             subprocess.run(["docker", "start", "auraderma-qdrant"], check=False)

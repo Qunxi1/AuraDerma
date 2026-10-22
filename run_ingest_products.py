@@ -4,9 +4,10 @@
 
 用法:
     python run_ingest_products.py [文件路径]
-    
+
 默认读取 data/raw/护肤品介绍文档1.jsonl
 """
+
 from __future__ import annotations
 
 import sys
@@ -23,8 +24,8 @@ load_dotenv(".env.local", override=True)
 from qdrant_client import QdrantClient
 
 from config import load_config
-from llm import LocalEmbedder
 from ingest_products import ingest_products_to_qdrant
+from llm import LocalEmbedder
 from retrieval import Retriever
 
 
@@ -47,7 +48,7 @@ def main(filepath: str | None = None) -> None:
     qdrant = QdrantClient(path=str(qdrant_path))
 
     # 加载本地 embedding 模型
-    print(f"[2/5] 加载本地 Embedding 模型 (BAAI/bge-small-zh-v1.5)...")
+    print("[2/5] 加载本地 Embedding 模型 (BAAI/bge-small-zh-v1.5)...")
     embedder = LocalEmbedder()
     print(f"      向量维度: {embedder.dim}")
 
@@ -63,11 +64,11 @@ def main(filepath: str | None = None) -> None:
     print(f"[4/5] 解析产品数据: {filepath}")
     records = ingest_products_to_qdrant(filepath, embedder, retriever)
 
-    print(f"\n{'='*50}")
+    print(f"\n{'=' * 50}")
     print(f"入库完成! 共处理 {len(records)} 个产品:")
-    print(f"{'='*50}")
+    print(f"{'=' * 50}")
     for i, r in enumerate(records):
-        print(f"\n{i+1}. {r.name}")
+        print(f"\n{i + 1}. {r.name}")
         print(f"   ID: {r.product_id}")
         print(f"   品牌: {r.brand}")
         print(f"   类别: {r.category}")
@@ -88,7 +89,7 @@ def main(filepath: str | None = None) -> None:
         print(f"   FAQ: {len(r.faq)} 条")
 
     # 验证：检索测试
-    print(f"\n{'='*50}")
+    print(f"\n{'=' * 50}")
     print("[5/5] 检索验证: 搜索 '祛痘控油护肤品' ...")
     query_vec = embedder.embed(["祛痘控油护肤品推荐"])[0]
     results = retriever.search(retriever.products_collection, query_vec, limit=3)

@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
-import os
 
 
 @dataclass(slots=True)
@@ -10,7 +10,7 @@ class AppConfig:
     model_api_base: str
     model_api_key: str
     default_model: str
-    context_window: int               # 模型上下文窗口（token 数）
+    context_window: int  # 模型上下文窗口（token 数）
     qdrant_url: str
     qdrant_api_key: str | None
     qdrant_collection_products: str
@@ -27,6 +27,7 @@ def _env_int(name: str, default: int) -> int:
     if raw is not None and raw.strip().isdigit():
         return int(raw.strip())
     return default
+
 
 def _env_bool(name: str, default: str = "true") -> bool:
     return os.getenv(name, default).lower() in {"1", "true", "yes", "on"}

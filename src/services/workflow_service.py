@@ -1,17 +1,21 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from textwrap import dedent
 
-from schema import IntentResult, WorkflowPlan
 from core import JsonParser, get_logger
 from prompts import SYSTEM_PROMPT, WORKFLOW_PLANNER_PROMPT
+from schema import IntentResult, WorkflowPlan
 
 log = get_logger("auraderma.workflow")
 
-_SKINCARE_PROCESSES = frozenset({
-    "product_search", "skincare_analysis", "regimen_planning", "memory_lookup",
-})
+_SKINCARE_PROCESSES = frozenset(
+    {
+        "product_search",
+        "skincare_analysis",
+        "regimen_planning",
+        "memory_lookup",
+    }
+)
 
 
 class WorkflowService:
@@ -35,7 +39,8 @@ class WorkflowService:
         """
         log.info(
             "规划工作流: intent=%s goal=%s",
-            intent.intent, intent.goal,
+            intent.intent,
+            intent.goal,
         )
 
         prompt = dedent(f"""

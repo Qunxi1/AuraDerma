@@ -21,14 +21,13 @@ API 设计参考 DeepSeek-Reasonix 的 ``src/tools/web.ts``。
 
 from __future__ import annotations
 
-import json
 import re
 from dataclasses import dataclass
 
 import requests
 from bs4 import BeautifulSoup
 
-from search_config import SearchApiKeys, save_search_config
+from search_config import SearchApiKeys
 
 
 @dataclass(slots=True)
@@ -131,6 +130,7 @@ SEARCH_TIMEOUT_S = 15
 # WebSearchClient
 # ---------------------------------------------------------------------------
 
+
 class WebSearchClient:
     """Web 搜索客户端，支持 10 个搜索引擎。
 
@@ -171,8 +171,7 @@ class WebSearchClient:
         provider = provider.lower().strip()
         if provider not in SEARCH_PROVIDERS:
             raise ValueError(
-                f"不支持的搜索提供方：'{provider}'。"
-                f"可用选项：{', '.join(SEARCH_PROVIDERS)}"
+                f"不支持的搜索提供方：'{provider}'。可用选项：{', '.join(SEARCH_PROVIDERS)}"
             )
         self.provider = provider
 
@@ -235,10 +234,11 @@ class WebSearchClient:
         results = self._parse_bing_results(html)[:top_k]
 
         if not results:
-            if re.search(r"captcha|verify you are human|access denied|forbidden", html, re.IGNORECASE):
+            if re.search(
+                r"captcha|verify you are human|access denied|forbidden", html, re.IGNORECASE
+            ):
                 raise RuntimeError(
-                    "Bing 反爬页面，可能被频率限制。"
-                    "可稍后再试，或切换到其他搜索引擎。"
+                    "Bing 反爬页面，可能被频率限制。可稍后再试，或切换到其他搜索引擎。"
                 )
             return []
 
@@ -293,8 +293,7 @@ class WebSearchClient:
             raise RuntimeError(f"SearXNG 请求失败（端点：{endpoint}）：{e}") from e
 
         html = resp.text
-        results = self._parse_searxng_results(html)[:top_k]
-        return results
+        return self._parse_searxng_results(html)[:top_k]
 
     @staticmethod
     def _parse_searxng_results(html: str) -> list[WebSearchResult]:
@@ -689,7 +688,9 @@ class WebSearchClient:
             raise RuntimeError(f"Brave 返回格式异常：{e}") from e
 
         results = []
-        for row in (data.get("web", {}) if isinstance(data.get("web"), dict) else {}).get("results", [])[:top_k]:
+        for row in (data.get("web", {}) if isinstance(data.get("web"), dict) else {}).get(
+            "results", []
+        )[:top_k]:
             results.append(
                 WebSearchResult(
                     title=row.get("title", ""),

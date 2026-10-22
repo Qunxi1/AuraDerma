@@ -8,9 +8,7 @@ from pathlib import Path
 from typing import TextIO
 
 _LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
-_LOG_FORMAT_VERBOSE = (
-    "%(asctime)s [%(levelname)s] %(name)s (%(filename)s:%(lineno)d): %(message)s"
-)
+_LOG_FORMAT_VERBOSE = "%(asctime)s [%(levelname)s] %(name)s (%(filename)s:%(lineno)d): %(message)s"
 _DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 

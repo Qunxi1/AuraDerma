@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import re
 from pathlib import Path
 from typing import Any
@@ -34,7 +35,7 @@ class FileReadSkill:
                 "text": text,
                 "metadata": metadata,
             }
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — 技能边界兜底，任何读取异常都转成错误信息返回
             return {"error": f"读取失败: {e}", "path": str(p)}
 
     # ------------------------------------------------------------------
@@ -56,15 +57,13 @@ class FileReadSkill:
             parts.append(page.get_text().strip())
 
             # 尝试提取表格
-            try:
+            with contextlib.suppress(Exception):
                 tables = page.find_tables()
                 for table in tables:
                     total_tables += 1
                     parts.append("")
                     for row in table.extract():
                         parts.append(" | ".join(str(c).strip() if c else "" for c in row))
-            except Exception:
-                pass
 
         text = "\n".join(parts).strip()
         pages = doc.page_count
@@ -115,16 +114,12 @@ class FileReadSkill:
     @staticmethod
     def _read_doc(path: Path) -> tuple[str, dict]:
         # 有些 .doc 实质上是 OOXML 格式，先试 python-docx
-        try:
+        with contextlib.suppress(Exception):
             return FileReadSkill._read_docx(path)
-        except Exception:
-            pass
 
         # Windows 下优先用 Win32 COM（需安装 Microsoft Word）
-        try:
+        with contextlib.suppress(Exception):
             return FileReadSkill._read_doc_win32com(path)
-        except Exception:
-            pass
 
         # 纯 Python fallback：olefile 解析二进制流
         return FileReadSkill._read_doc_olefile(path)
@@ -151,15 +146,11 @@ class FileReadSkill:
             return text, {"source": "win32com", "characters": len(text)}
         finally:
             if doc is not None:
-                try:
+                with contextlib.suppress(Exception):
                     doc.Close(SaveChanges=False)
-                except Exception:
-                    pass
             if word is not None:
-                try:
+                with contextlib.suppress(Exception):
                     word.Quit()
-                except Exception:
-                    pass
             pythoncom.CoUninitialize()
 
     @staticmethod
@@ -178,9 +169,7 @@ class FileReadSkill:
 
             # 文本通常从偏移 2048 附近开始
             best_off = 2048
-            raw = data[best_off : best_off + ccp_text * 2].decode(
-                "utf-16-le", errors="replace"
-            )
+            raw = data[best_off : best_off + ccp_text * 2].decode("utf-16-le", errors="replace")
             cleaned = "".join(c for c in raw if c.isprintable() or c in "\n\r\t")
             cleaned = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", cleaned)
             cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()

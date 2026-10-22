@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from qdrant_client.http import models as qdrant_models
 
-from schema import AgentContext, IntentResult, RegimenPlan, WorkflowPlan, json_dumps_pretty
 from core import JsonParser, get_logger
 from prompts import MEMORY_ROUTER_PROMPT, RETRIEVAL_PROMPT, SKILL_ROUTER_PROMPT, SYSTEM_PROMPT
+from schema import IntentResult, RegimenPlan, json_dumps_pretty
 
 log = get_logger("auraderma.retrieval")
 
@@ -108,7 +108,9 @@ class RetrievalService:
             cat_query = f"{question} {cat} 推荐"
             cat_emb = self.embed_query(cat_query)
             multi_hits[cat] = self._retriever.search(
-                self._retriever.products_collection, cat_emb, limit=4,
+                self._retriever.products_collection,
+                cat_emb,
+                limit=4,
             )
 
         # 去重合并
@@ -133,7 +135,9 @@ class RetrievalService:
             if sq not in seen_queries:
                 sq_emb = self.embed_query(sq)
                 seen_queries[sq] = self._retriever.search(
-                    self._retriever.products_collection, sq_emb, limit=3,
+                    self._retriever.products_collection,
+                    sq_emb,
+                    limit=3,
                 )
             step.product_hits = seen_queries[sq]
 
@@ -156,9 +160,17 @@ class RetrievalService:
     # 技能路由
     # ------------------------------------------------------------------
 
-    def route_skills(self, question: str, intent: IntentResult, memory_lines: list[str],
-                     recall_lines: list[str], product_hits: list, memory_hits: list,
-                     doc_hits: list, skill_manager) -> tuple[list[str], str, str]:
+    def route_skills(
+        self,
+        question: str,
+        intent: IntentResult,
+        memory_lines: list[str],
+        recall_lines: list[str],
+        product_hits: list,
+        memory_hits: list,
+        doc_hits: list,
+        skill_manager,
+    ) -> tuple[list[str], str, str]:
         """路由需要调用的外部技能。"""
         log.info("路由外部技能")
 
@@ -187,8 +199,9 @@ class RetrievalService:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def should_use_web(product_hits, memory_hits, doc_hits,
-                       index_recall_lines, skill_names) -> bool:
+    def should_use_web(
+        product_hits, memory_hits, doc_hits, index_recall_lines, skill_names
+    ) -> bool:
         if product_hits or doc_hits or memory_hits or index_recall_lines:
             return False
         return "web_search" in skill_names or len(skill_names) == 0

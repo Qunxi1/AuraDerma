@@ -23,7 +23,9 @@ COMMAND_SPECS: list[CommandSpec] = [
     CommandSpec("/model", "switch or inspect model", "/model [name]"),
     CommandSpec("/models", "list model options", "/models"),
     CommandSpec("/search-engine", "switch web search provider", "/search-engine [name]"),
-    CommandSpec("/search-config", "set api key for a search provider", "/search-config <name> <key>"),
+    CommandSpec(
+        "/search-config", "set api key for a search provider", "/search-config <name> <key>"
+    ),
     CommandSpec("/memory", "show memory summary", "/memory"),
     CommandSpec("/profile", "show aggregated skin profile", "/profile"),
     CommandSpec("/skills", "show available skills", "/skills"),
@@ -99,11 +101,13 @@ def handle_command(cmd: str, session, user_id: str, memory) -> str:
 
         profile = aggregate_skin_profile(memory.profile)
         if profile.is_empty():
-            click.echo("尚无肤质信息。可以在聊天中告诉我你的肤质情况，例如：\n"
-                       "  \"我 T 区油\"\n"
-                       "  \"脸颊干\"\n"
-                       "  \"容易过敏\"\n"
-                       "  \"我是混油皮\"")
+            click.echo(
+                "尚无肤质信息。可以在聊天中告诉我你的肤质情况，例如：\n"
+                '  "我 T 区油"\n'
+                '  "脸颊干"\n'
+                '  "容易过敏"\n'
+                '  "我是混油皮"'
+            )
         else:
             profile_text = profile.to_formatted_block()
             click.echo(profile_text)
@@ -166,7 +170,6 @@ def _show_search_engines(session) -> None:
     max_key = max(len(k) for k in SEARCH_PROVIDERS) + 2
     for key, info in SEARCH_PROVIDERS.items():
         marker = " *" if key == session.web.provider else ""
-        needs = "需 API Key" if info["needs_api_key"] else "无需 Key"
         click.echo(f"  {key:<{max_key}} {info['label']}{marker}")
     click.echo("")
     click.echo("切换命令：/search-engine <名称>")
@@ -180,7 +183,6 @@ def _show_search_engines(session) -> None:
 def _handle_search_config(cmd: str, session) -> str:
     from search_config import (
         PROVIDERS_NO_CONFIG,
-        PROVIDER_TO_ENDPOINT_FIELD,
         save_api_key_for_provider,
     )
 
@@ -198,12 +200,15 @@ def _handle_search_config(cmd: str, session) -> str:
 
     if provider_name == "searxng":
         from search_config import save_search_config
+
         save_search_config(searxngEndpoint=api_key)
         click.echo(f"SearXNG 端点已保存为：{api_key}")
         return "rerender"
 
     if provider_name in PROVIDERS_NO_CONFIG:
-        click.echo(f"'{provider_name}' 不需要 API Key，可直接使用 /search-engine {provider_name} 切换")
+        click.echo(
+            f"'{provider_name}' 不需要 API Key，可直接使用 /search-engine {provider_name} 切换"
+        )
         return "rerender"
 
     err = save_api_key_for_provider(provider_name, api_key)
@@ -218,7 +223,7 @@ def _handle_search_config(cmd: str, session) -> str:
 
 
 def _print_supported_for_config() -> None:
-    from search_config import PROVIDER_TO_FIELD, PROVIDER_TO_ENDPOINT_FIELD, PROVIDERS_NO_CONFIG
+    from search_config import PROVIDER_TO_ENDPOINT_FIELD, PROVIDER_TO_FIELD, PROVIDERS_NO_CONFIG
 
     for provider, field in PROVIDER_TO_FIELD.items():
         click.echo(f"  {provider:<12} → 配置字段: {field}")

@@ -3,8 +3,8 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
-from skills_registry import SkillsRegistry
 from skills.web_search.client import WebSearchClient
+from skills_registry import SkillsRegistry
 
 # Load skill implementations from skills/<skill_name>/skill.py
 _SKILLS_DIR = Path(__file__).resolve().parent.parent / "skills"

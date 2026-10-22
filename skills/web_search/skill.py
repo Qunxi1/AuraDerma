@@ -16,8 +16,5 @@ class WebSearchSkill:
             "description": "Search the public web for current information",
             "query": query,
             "top_k": top_k,
-            "results": [
-                {"title": r.title, "url": r.url, "snippet": r.snippet}
-                for r in results
-            ],
+            "results": [{"title": r.title, "url": r.url, "snippet": r.snippet} for r in results],
         }
