@@ -9,3 +9,6 @@ pywin32>=306
 requests>=2.32.3
 sentence-transformers>=3.0
 beautifulsoup4>=4.12
+
+# 开发工具（linter，非运行时依赖）
+ruff>=0.17.1
